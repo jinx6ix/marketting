@@ -1,0 +1,627 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useMemo, useState, useTransition } from "react";
+import { Sparkles, Wand2, Hash, Upload, X as XIcon } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { createItem, updateItem } from "../actions";
+import type { ItemFormValues } from "../schemas";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import { PLATFORM_LABELS } from "@/components/charts/theme";
+import type { Platform } from "@/types/database";
+
+interface AccountOption {
+  id: string;
+  platform: Platform;
+  handle: string | null;
+  display_name: string | null;
+}
+
+interface CampaignOption {
+  id: string;
+  name: string;
+}
+
+const MAX_LENGTHS: Record<Platform, number> = {
+  facebook: 63206,
+  instagram: 2200,
+  x: 280,
+  tiktok: 2200,
+  youtube: 5000,
+  linkedin: 3000,
+  pinterest: 500,
+};
+
+const MEDIA_REQUIRED: Platform[] = ["instagram", "tiktok", "pinterest", "youtube"];
+
+interface MediaEntry {
+  storage_path: string;
+  type: "image" | "video";
+}
+
+export function Composer({
+  accounts,
+  campaigns,
+  orgId,
+  initial,
+  itemId,
+}: {
+  accounts: AccountOption[];
+  campaigns: CampaignOption[];
+  orgId: string;
+  initial?: Partial<ItemFormValues>;
+  itemId?: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  const [type, setType] = useState(initial?.type ?? "social_post");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [body, setBody] = useState(initial?.body ?? "");
+  const [destination, setDestination] = useState(initial?.destination ?? "");
+  const [hashtags, setHashtags] = useState<string[]>(initial?.hashtags ?? []);
+  const [hashtagInput, setHashtagInput] = useState("");
+  const [media, setMedia] = useState<MediaEntry[]>(
+    (initial?.media as MediaEntry[]) ?? []
+  );
+  const [campaignId, setCampaignId] = useState(initial?.campaign_id ?? "");
+  const [scheduledAt, setScheduledAt] = useState(
+    initial?.scheduled_at ? initial.scheduled_at.slice(0, 16) : ""
+  );
+  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(
+    new Set(initial?.targets?.map((t) => t.social_account_id) ?? [])
+  );
+  const [variants, setVariants] = useState<Record<string, string>>(
+    Object.fromEntries(
+      (initial?.targets ?? [])
+        .filter((t) => t.variant_body)
+        .map((t) => [t.social_account_id, t.variant_body!])
+    )
+  );
+  const [activeVariantTab, setActiveVariantTab] = useState<string | null>(null);
+
+  // promo fields
+  const [showPromo, setShowPromo] = useState(!!initial?.promo);
+  const [promoCode, setPromoCode] = useState(initial?.promo?.promo_code ?? "");
+  const [discountPct, setDiscountPct] = useState(
+    initial?.promo?.discount_pct?.toString() ?? ""
+  );
+  const [packageName, setPackageName] = useState(
+    initial?.promo?.package_name ?? ""
+  );
+
+  // AI
+  const [aiBusy, setAiBusy] = useState<string | null>(null);
+  const [brief, setBrief] = useState("");
+
+  const [uploading, setUploading] = useState(false);
+
+  const selectedPlatforms = useMemo(
+    () =>
+      [...selectedAccounts]
+        .map((id) => accounts.find((a) => a.id === id)?.platform)
+        .filter((p): p is Platform => !!p),
+    [selectedAccounts, accounts]
+  );
+
+  const mediaWarning =
+    media.length === 0 &&
+    selectedPlatforms.some((p) => MEDIA_REQUIRED.includes(p))
+      ? `Media required for: ${selectedPlatforms
+          .filter((p) => MEDIA_REQUIRED.includes(p))
+          .map((p) => PLATFORM_LABELS[p])
+          .join(", ")}`
+      : null;
+
+  async function callAi(action: "generate" | "improve" | "hashtags") {
+    setAiBusy(action);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          brief: action === "generate" ? brief || title : undefined,
+          text: action !== "generate" ? body : undefined,
+          destination: destination || undefined,
+          promo: showPromo
+            ? {
+                promo_code: promoCode || undefined,
+                discount_pct: discountPct ? Number(discountPct) : undefined,
+                package_name: packageName || undefined,
+              }
+            : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `AI request failed (${res.status})`);
+      }
+      if (action === "hashtags") {
+        const data = (await res.json()) as { hashtags: string[] };
+        setHashtags((prev) => [...new Set([...prev, ...data.hashtags])].slice(0, 30));
+      } else {
+        // stream into the body field
+        setBody("");
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let acc = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          acc += decoder.decode(value, { stream: true });
+          setBody(acc);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI request failed");
+    } finally {
+      setAiBusy(null);
+    }
+  }
+
+  async function uploadFiles(files: FileList) {
+    setUploading(true);
+    setError(null);
+    const supabase = createClient();
+    try {
+      for (const file of Array.from(files)) {
+        const ext = file.name.split(".").pop() ?? "bin";
+        const path = `${orgId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from("media")
+          .upload(path, file, { contentType: file.type });
+        if (upErr) throw new Error(upErr.message);
+        setMedia((prev) => [
+          ...prev,
+          {
+            storage_path: path,
+            type: file.type.startsWith("video") ? "video" : "image",
+          },
+        ]);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function submit() {
+    setError(null);
+    const values: ItemFormValues = {
+      type,
+      title,
+      body,
+      campaign_id: campaignId || null,
+      destination: destination || undefined,
+      hashtags,
+      media,
+      promo: showPromo
+        ? {
+            promo_code: promoCode || undefined,
+            discount_pct: discountPct ? Number(discountPct) : undefined,
+            package_name: packageName || undefined,
+          }
+        : null,
+      scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ai_generated: false,
+      targets: [...selectedAccounts].map((id) => {
+        const account = accounts.find((a) => a.id === id)!;
+        return {
+          social_account_id: id,
+          platform: account.platform,
+          variant_body: variants[id] || null,
+        };
+      }),
+    };
+
+    startTransition(async () => {
+      const result = itemId
+        ? await updateItem(itemId, values)
+        : await createItem(values);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        router.push("/items");
+      }
+    });
+  }
+
+  return (
+    <div className="grid max-w-5xl gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>{itemId ? "Edit item" : "Create marketing item"}</CardTitle>
+            <CardDescription>
+              Master copy — adapt per platform in the variant tabs below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Type</Label>
+                <Select
+                  value={type}
+                  onChange={(e) => setType(e.target.value as typeof type)}
+                >
+                  <option value="social_post">Social post</option>
+                  <option value="promotion">Promotion / deal</option>
+                  <option value="announcement">Announcement</option>
+                  <option value="email">Email</option>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Campaign</Label>
+                <Select
+                  value={campaignId ?? ""}
+                  onChange={(e) => setCampaignId(e.target.value)}
+                >
+                  <option value="">No campaign</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Title (internal)</Label>
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Bali early-bird promo — June"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Destination</Label>
+              <Input
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                placeholder="Bali, Indonesia"
+              />
+            </div>
+
+            {/* AI toolbar */}
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="size-4 text-primary" />
+                <span className="text-sm font-medium">AI assist</span>
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={brief}
+                  onChange={(e) => setBrief(e.target.value)}
+                  placeholder="Brief: 20% off 5-day Bali package for solo travelers…"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={aiBusy !== null || (!brief && !title)}
+                  onClick={() => callAi("generate")}
+                >
+                  <Wand2 />
+                  {aiBusy === "generate" ? "Writing…" : "Generate"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={aiBusy !== null || !body}
+                  onClick={() => callAi("improve")}
+                >
+                  {aiBusy === "improve" ? "Improving…" : "Improve"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={aiBusy !== null || !body}
+                  onClick={() => callAi("hashtags")}
+                >
+                  <Hash />
+                  {aiBusy === "hashtags" ? "…" : "Hashtags"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Master copy</Label>
+              <Textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={7}
+                placeholder="Write or generate the post copy…"
+              />
+              <div className="text-right text-xs text-muted-foreground">
+                {body.length} chars
+              </div>
+            </div>
+
+            {/* Hashtags */}
+            <div className="space-y-2">
+              <Label>Hashtags</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {hashtags.map((h) => (
+                  <Badge key={h} variant="secondary" className="gap-1">
+                    #{h}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setHashtags((prev) => prev.filter((x) => x !== h))
+                      }
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </Badge>
+                ))}
+                <Input
+                  value={hashtagInput}
+                  onChange={(e) => setHashtagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && hashtagInput.trim()) {
+                      e.preventDefault();
+                      setHashtags((prev) => [
+                        ...new Set([...prev, hashtagInput.trim().replace(/^#/, "")]),
+                      ]);
+                      setHashtagInput("");
+                    }
+                  }}
+                  placeholder="Add + Enter"
+                  className="h-7 w-32 text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Promo */}
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={showPromo}
+                  onChange={(e) => setShowPromo(e.target.checked)}
+                />
+                This is a promotion / deal
+              </label>
+              {showPromo && (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Package</Label>
+                    <Input
+                      value={packageName}
+                      onChange={(e) => setPackageName(e.target.value)}
+                      placeholder="5-day Bali Escape"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Discount %</Label>
+                    <Input
+                      type="number"
+                      value={discountPct}
+                      onChange={(e) => setDiscountPct(e.target.value)}
+                      placeholder="20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Promo code</Label>
+                    <Input
+                      value={promoCode}
+                      onChange={(e) => setPromoCode(e.target.value)}
+                      placeholder="BALI20"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Media */}
+            <div className="space-y-2">
+              <Label>Media</Label>
+              <div className="flex flex-wrap items-center gap-2">
+                {media.map((m) => (
+                  <Badge key={m.storage_path} variant="outline" className="gap-1">
+                    {m.type} · {m.storage_path.split("/").pop()}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMedia((prev) =>
+                          prev.filter((x) => x.storage_path !== m.storage_path)
+                        )
+                      }
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </Badge>
+                ))}
+                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent">
+                  <Upload className="size-3.5" />
+                  {uploading ? "Uploading…" : "Upload image/video"}
+                  <input
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                    className="hidden"
+                    disabled={uploading}
+                    onChange={(e) => e.target.files && uploadFiles(e.target.files)}
+                  />
+                </label>
+              </div>
+              {mediaWarning && (
+                <p className="text-xs text-warning">{mediaWarning}</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Per-platform variants */}
+        {selectedAccounts.size > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Platform variants</CardTitle>
+              <CardDescription>
+                Optional per-platform copy. Empty = master copy + hashtags.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="mb-3 flex flex-wrap gap-1">
+                {[...selectedAccounts].map((id) => {
+                  const account = accounts.find((a) => a.id === id);
+                  if (!account) return null;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() =>
+                        setActiveVariantTab(activeVariantTab === id ? null : id)
+                      }
+                      className={cn(
+                        "rounded-md border px-3 py-1.5 text-xs",
+                        activeVariantTab === id
+                          ? "border-primary bg-primary/10 font-medium"
+                          : "hover:bg-accent"
+                      )}
+                    >
+                      {PLATFORM_LABELS[account.platform]}
+                      {variants[id] ? " ●" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+              {activeVariantTab &&
+                (() => {
+                  const account = accounts.find((a) => a.id === activeVariantTab);
+                  if (!account) return null;
+                  const limit = MAX_LENGTHS[account.platform];
+                  const text = variants[activeVariantTab] ?? "";
+                  const over = text.length > limit;
+                  return (
+                    <div className="space-y-2">
+                      <Textarea
+                        value={text}
+                        onChange={(e) =>
+                          setVariants((prev) => ({
+                            ...prev,
+                            [activeVariantTab]: e.target.value,
+                          }))
+                        }
+                        rows={5}
+                        placeholder={`Custom copy for ${PLATFORM_LABELS[account.platform]}…`}
+                      />
+                      <div
+                        className={cn(
+                          "text-right text-xs",
+                          over ? "font-medium text-destructive" : "text-muted-foreground"
+                        )}
+                      >
+                        {text.length} / {limit}
+                      </div>
+                    </div>
+                  );
+                })()}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Right rail: targets + schedule */}
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Publish to</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {accounts.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No connected accounts.{" "}
+                <a href="/settings/accounts" className="text-primary hover:underline">
+                  Connect one
+                </a>
+                .
+              </p>
+            )}
+            {accounts.map((a) => (
+              <label
+                key={a.id}
+                className="flex cursor-pointer items-center gap-2 rounded-md border p-2 text-sm hover:bg-accent"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedAccounts.has(a.id)}
+                  onChange={(e) => {
+                    setSelectedAccounts((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(a.id);
+                      else next.delete(a.id);
+                      return next;
+                    });
+                  }}
+                />
+                <span className="font-medium">{PLATFORM_LABELS[a.platform]}</span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {a.handle ?? a.display_name}
+                </span>
+              </label>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Schedule</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {scheduledAt
+                ? "Will auto-publish to selected accounts at this time."
+                : "Leave empty to save as draft."}
+            </p>
+          </CardContent>
+        </Card>
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
+
+        <Button
+          className="w-full"
+          size="lg"
+          disabled={pending || !title || uploading}
+          onClick={submit}
+        >
+          {pending
+            ? "Saving…"
+            : scheduledAt
+              ? "Schedule"
+              : itemId
+                ? "Save changes"
+                : "Save draft"}
+        </Button>
+      </div>
+    </div>
+  );
+}
