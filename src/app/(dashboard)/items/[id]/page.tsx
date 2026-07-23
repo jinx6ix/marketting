@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
+import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -25,7 +26,7 @@ export default async function ItemDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const { orgId, supabase } = await getSessionContext();
+  const { user, orgId, supabase } = await getSessionContext();
 
   const { data: item } = await supabase
     .from("marketing_items")
@@ -35,10 +36,19 @@ export default async function ItemDetailPage({
     .single();
   if (!item) notFound();
 
-  const { data: targets } = await supabase
-    .from("post_targets")
-    .select("*, social_accounts(handle, display_name)")
-    .eq("item_id", id);
+  const [{ data: targets }, { data: membership }] = await Promise.all([
+    supabase
+      .from("post_targets")
+      .select("*, social_accounts(handle, display_name)")
+      .eq("item_id", id),
+    supabase
+      .from("org_members")
+      .select("role")
+      .eq("org_id", orgId!)
+      .eq("user_id", user!.id)
+      .single(),
+  ]);
+  const canApprove = ["owner", "admin"].includes(membership?.role ?? "");
 
   const editable = ["draft", "scheduled", "failed"].includes(item.status);
 
@@ -75,13 +85,18 @@ export default async function ItemDetailPage({
     };
 
     return (
-      <Composer
-        orgId={orgId!}
-        itemId={id}
-        initial={initial}
-        accounts={(accounts ?? []) as { id: string; platform: Platform; handle: string | null; display_name: string | null }[]}
-        campaigns={campaigns ?? []}
-      />
+      <div className="space-y-4">
+        {["draft", "failed"].includes(item.status) && (
+          <ApprovalBar itemId={id} status={item.status} canApprove={canApprove} />
+        )}
+        <Composer
+          orgId={orgId!}
+          itemId={id}
+          initial={initial}
+          accounts={(accounts ?? []) as { id: string; platform: Platform; handle: string | null; display_name: string | null }[]}
+          campaigns={campaigns ?? []}
+        />
+      </div>
     );
   }
 
@@ -114,6 +129,10 @@ export default async function ItemDetailPage({
           ← All items
         </Link>
       </div>
+
+      {item.status === "in_review" && (
+        <ApprovalBar itemId={id} status={item.status} canApprove={canApprove} />
+      )}
 
       <Card>
         <CardHeader>

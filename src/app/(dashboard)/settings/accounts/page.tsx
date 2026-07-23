@@ -55,13 +55,10 @@ export default async function AccountsSettingsPage({
 
   return (
     <div className="max-w-4xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Connected accounts</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          Connect the social profiles you publish to. Tokens are encrypted at
-          rest and refreshed automatically.
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        Connect the social profiles you publish to. Tokens are encrypted at
+        rest and refreshed automatically.
+      </p>
 
       {connected && (
         <p className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm">

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionContext } from "@/lib/supabase/server";
 import { aiChatStream, aiJson } from "@/lib/ai/client";
+import { checkAiQuota } from "@/lib/ai/quota";
 import {
   contentSystemPrompt,
   generatePostPrompt,
@@ -39,6 +40,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
   const body = parsed.data;
+
+  const quota = await checkAiQuota(orgId);
+  if (!quota.ok) {
+    return NextResponse.json(
+      { error: `Daily AI limit reached (${quota.limit} calls). Try again tomorrow.` },
+      { status: 429 }
+    );
+  }
 
   const { data: org } = await supabase
     .from("organizations")

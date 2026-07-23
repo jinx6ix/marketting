@@ -12,17 +12,24 @@ export default async function DashboardLayout({
   if (!user) redirect("/login");
   if (!orgId) redirect("/signup");
 
-  const { data: org } = await supabase
-    .from("organizations")
-    .select("name")
-    .eq("id", orgId)
-    .single();
+  const [{ data: org }, { count: failedCount }] = await Promise.all([
+    supabase.from("organizations").select("name").eq("id", orgId).single(),
+    supabase
+      .from("marketing_items")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("status", "failed"),
+  ]);
 
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar orgName={org?.name ?? "My organization"} userEmail={user.email ?? ""} />
+        <Topbar
+          orgName={org?.name ?? "My organization"}
+          userEmail={user.email ?? ""}
+          failedCount={failedCount ?? 0}
+        />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>

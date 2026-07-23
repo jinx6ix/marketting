@@ -149,6 +149,84 @@ export async function deleteItem(id: string): Promise<ActionResult> {
   redirect("/items");
 }
 
+/** Editor hands a draft to owners/admins for sign-off. */
+export async function submitForReview(id: string): Promise<ActionResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const { error } = await supabase
+    .from("marketing_items")
+    .update({ status: "in_review" })
+    .eq("id", id)
+    .eq("org_id", orgId)
+    .in("status", ["draft", "failed"]);
+  if (error) return { error: error.message };
+
+  revalidatePath("/items");
+  revalidatePath(`/items/${id}`);
+  return { id };
+}
+
+async function requireApprover(): Promise<
+  { error: string } | { orgId: string; supabase: Awaited<ReturnType<typeof getSessionContext>>["supabase"] }
+> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+  const { data: membership } = await supabase
+    .from("org_members")
+    .select("role")
+    .eq("org_id", orgId)
+    .eq("user_id", user.id)
+    .single();
+  if (!membership || !["owner", "admin"].includes(membership.role)) {
+    return { error: "Only owners and admins can review items" };
+  }
+  return { orgId, supabase };
+}
+
+/** Approve: scheduled if it has a publish time, otherwise back to draft. */
+export async function approveItem(id: string): Promise<ActionResult> {
+  const ctx = await requireApprover();
+  if ("error" in ctx) return { error: ctx.error };
+
+  const { data: item } = await ctx.supabase
+    .from("marketing_items")
+    .select("scheduled_at, status")
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .single();
+  if (!item) return { error: "Item not found" };
+  if (item.status !== "in_review") return { error: "Item is not in review" };
+
+  const { error } = await ctx.supabase
+    .from("marketing_items")
+    .update({ status: item.scheduled_at ? "scheduled" : "draft" })
+    .eq("id", id);
+  if (error) return { error: error.message };
+
+  revalidatePath("/items");
+  revalidatePath(`/items/${id}`);
+  revalidatePath("/calendar");
+  return { id };
+}
+
+export async function requestChanges(id: string): Promise<ActionResult> {
+  const ctx = await requireApprover();
+  if ("error" in ctx) return { error: ctx.error };
+
+  const { error } = await ctx.supabase
+    .from("marketing_items")
+    .update({ status: "draft" })
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .eq("status", "in_review");
+  if (error) return { error: error.message };
+
+  revalidatePath("/items");
+  revalidatePath(`/items/${id}`);
+  return { id };
+}
+
 export async function rescheduleItem(
   id: string,
   scheduledAt: string | null

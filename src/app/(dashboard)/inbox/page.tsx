@@ -14,6 +14,7 @@ import {
   MarkAllReadButton,
 } from "@/features/inbox/components/mention-actions";
 import { KeywordsPanel } from "@/features/inbox/components/keywords-panel";
+import { RealtimeRefresher } from "@/components/realtime-refresher";
 import { PLATFORM_LABELS } from "@/components/charts/theme";
 import { cn, relativeTime } from "@/lib/utils";
 import type { MentionKind, Platform, Sentiment } from "@/types/database";
@@ -26,26 +27,35 @@ const SENTIMENT_VARIANT: Record<Sentiment, "success" | "secondary" | "destructiv
   negative: "destructive",
 };
 
+const PAGE_SIZE = 25;
+
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; kind?: string; platform?: string }>;
+  searchParams: Promise<{
+    filter?: string;
+    kind?: string;
+    platform?: string;
+    page?: string;
+  }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
-  const { filter, kind, platform } = await searchParams;
+  const { filter, kind, platform, page: pageParam } = await searchParams;
+  const page = Math.max(1, Number(pageParam) || 1);
+  const from = (page - 1) * PAGE_SIZE;
 
   let query = supabase
     .from("mentions")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("org_id", orgId!)
     .order("occurred_at", { ascending: false, nullsFirst: false })
-    .limit(100);
+    .range(from, from + PAGE_SIZE - 1);
   if (filter === "unread") query = query.eq("is_read", false);
   if (filter === "unreplied") query = query.eq("replied", false);
   if (kind) query = query.eq("kind", kind as MentionKind);
   if (platform) query = query.eq("platform", platform as Platform);
 
-  const [{ data: mentions }, { data: keywords }, { count: unreadCount }] =
+  const [{ data: mentions, count: totalCount }, { data: keywords }, { count: unreadCount }] =
     await Promise.all([
       query,
       supabase
@@ -86,6 +96,7 @@ export default async function InboxPage({
 
   return (
     <div className="space-y-6">
+      <RealtimeRefresher table="mentions" orgId={orgId!} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">Inbox</h1>

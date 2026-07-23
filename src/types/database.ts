@@ -27,6 +27,7 @@ export type ItemType = "social_post" | "promotion" | "announcement" | "email";
 
 export type ItemStatus =
   | "draft"
+  | "in_review"
   | "scheduled"
   | "publishing"
   | "published"
@@ -392,6 +393,11 @@ export interface Database {
         items_processed: number;
         error: string | null;
       }>;
+      ai_usage: Row<{
+        org_id: string;
+        day: string;
+        calls: number;
+      }>;
     };
     Views: {
       v_follower_growth: ViewRow<{
@@ -434,6 +440,7 @@ export interface Database {
     Functions: {
       is_org_member: { Args: { p_org: string }; Returns: boolean };
       has_org_role: { Args: { p_org: string; p_roles: string[] }; Returns: boolean };
+      increment_ai_usage: { Args: { p_org: string }; Returns: number };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

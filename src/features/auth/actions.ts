@@ -103,6 +103,47 @@ export async function signup(
   redirect("/dashboard");
 }
 
+export async function requestPasswordReset(
+  _prev: AuthFormState,
+  formData: FormData
+): Promise<AuthFormState> {
+  const email = z.string().email().safeParse(formData.get("email"));
+  if (!email.success) return { error: "Enter a valid email address" };
+
+  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email.data, {
+    redirectTo: `${base.replace(/\/$/, "")}/auth/callback?next=/reset-password`,
+  });
+  if (error) return { error: error.message };
+
+  return {
+    message:
+      "If an account exists for that email, a password reset link is on its way.",
+  };
+}
+
+export async function updatePassword(
+  _prev: AuthFormState,
+  formData: FormData
+): Promise<AuthFormState> {
+  const password = z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .safeParse(formData.get("password"));
+  if (!password.success) return { error: password.error.issues[0].message };
+  if (formData.get("password") !== formData.get("confirm")) {
+    return { error: "Passwords do not match" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({ password: password.data });
+  if (error) return { error: error.message };
+
+  revalidatePath("/", "layout");
+  redirect("/dashboard");
+}
+
 export async function logout(): Promise<void> {
   const supabase = await createClient();
   await supabase.auth.signOut();

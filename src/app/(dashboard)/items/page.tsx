@@ -16,28 +16,45 @@ import type { ItemStatus, ItemType } from "@/types/database";
 
 export const metadata = { title: "Marketing Items" };
 
+const PAGE_SIZE = 25;
+
 export default async function ItemsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; type?: string }>;
+  searchParams: Promise<{ status?: string; type?: string; page?: string }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
-  const { status, type } = await searchParams;
+  const { status, type, page: pageParam } = await searchParams;
+  const page = Math.max(1, Number(pageParam) || 1);
+  const from = (page - 1) * PAGE_SIZE;
 
   let query = supabase
     .from("marketing_items")
-    .select("id, title, type, status, destination, scheduled_at, created_at, campaigns(name)")
+    .select(
+      "id, title, type, status, destination, scheduled_at, created_at, campaigns(name)",
+      { count: "exact" }
+    )
     .eq("org_id", orgId!)
     .order("created_at", { ascending: false })
-    .limit(100);
+    .range(from, from + PAGE_SIZE - 1);
   if (status) query = query.eq("status", status as ItemStatus);
   if (type) query = query.eq("type", type as ItemType);
 
-  const { data: items } = await query;
+  const { data: items, count } = await query;
+  const totalPages = Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE));
+  const pageHref = (p: number) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (type) params.set("type", type);
+    if (p > 1) params.set("page", String(p));
+    const s = params.toString();
+    return s ? `/items?${s}` : "/items";
+  };
 
   const FILTERS = [
     { label: "All", href: "/items" },
     { label: "Drafts", href: "/items?status=draft" },
+    { label: "In review", href: "/items?status=in_review" },
     { label: "Scheduled", href: "/items?status=scheduled" },
     { label: "Published", href: "/items?status=published" },
     { label: "Failed", href: "/items?status=failed" },
@@ -113,6 +130,32 @@ export default async function ItemsPage({
           )}
         </TableBody>
       </Table>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">
+            Page {page} of {totalPages} · {count} items
+          </span>
+          <div className="flex gap-2">
+            {page > 1 && (
+              <Link
+                href={pageHref(page - 1)}
+                className="rounded-md border px-3 py-1 hover:bg-accent"
+              >
+                ← Newer
+              </Link>
+            )}
+            {page < totalPages && (
+              <Link
+                href={pageHref(page + 1)}
+                className="rounded-md border px-3 py-1 hover:bg-accent"
+              >
+                Older →
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ const STATUS_VARIANTS: Record<
   "default" | "secondary" | "destructive" | "success" | "warning" | "outline"
 > = {
   draft: "secondary",
+  in_review: "warning",
   scheduled: "default",
   publishing: "warning",
   published: "success",
