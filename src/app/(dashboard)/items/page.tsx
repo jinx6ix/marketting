@@ -62,28 +62,29 @@ export default async function ItemsPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Marketing items</h1>
-        <Button asChild>
+      <div className="flex flex-wrap items-center gap-2 sm:justify-between">
+        <h1 className="text-lg font-semibold sm:text-xl">Marketing items</h1>
+        <Button asChild size="sm">
           <Link href="/items/new" className="flex items-center gap-1.5">
             <Plus className="size-4" /> New item
           </Link>
         </Button>
       </div>
 
-      <div className="flex gap-2">
+      <div className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-0">
         {FILTERS.map((f) => (
           <Link
             key={f.href}
             href={f.href}
-            className="rounded-md border px-3 py-1 text-xs hover:bg-accent"
+            className="whitespace-nowrap rounded-md border px-3 py-1 text-xs hover:bg-accent"
           >
             {f.label}
           </Link>
         ))}
       </div>
 
-      <Table>
+      <div className="overflow-x-auto rounded-md border">
+        <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Title</TableHead>
@@ -130,9 +131,10 @@ export default async function ItemsPage({
           )}
         </TableBody>
       </Table>
+      </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
+        <div className="flex flex-col items-start justify-between gap-2 text-sm sm:flex-row sm:items-center">
           <span className="text-muted-foreground">
             Page {page} of {totalPages} · {count} items
           </span>

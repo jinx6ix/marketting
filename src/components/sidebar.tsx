@@ -28,18 +28,18 @@ const NAV = [
   { href: "/settings/accounts", label: "Settings", icon: Settings },
 ];
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-screen w-56 shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+    <aside className="flex h-full w-56 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:h-screen">
       <div className="flex items-center gap-2 px-4 py-5">
         <Plane className="size-6" />
         <span className="text-sm font-semibold tracking-tight">
           Wanderlust OS
         </span>
       </div>
-      <nav className="flex-1 space-y-0.5 px-2">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-2">
         {NAV.map((item) => {
           const active =
             pathname === item.href ||
@@ -48,6 +48,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
                 active
@@ -62,7 +63,7 @@ export function Sidebar() {
         })}
       </nav>
       <div className="px-4 py-4 text-xs text-sidebar-foreground/50">
-        Travel &amp; Tours Marketing
+        Travel & Tours Marketing
       </div>
     </aside>
   );

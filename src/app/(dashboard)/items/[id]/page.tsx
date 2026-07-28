@@ -103,7 +103,6 @@ export default async function ItemDetailPage({
       </div>
     );
   }
-
   // Published/read-only view with per-target results + latest metrics
   const targetIds = (targets ?? []).map((t) => t.id);
   const { data: snapshots } = targetIds.length
@@ -121,15 +120,17 @@ export default async function ItemDetailPage({
 
   return (
     <div className="max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">{item.title}</h1>
-          <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="break-words text-lg font-semibold sm:text-xl">
+            {item.title}
+          </h1>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <StatusBadge status={item.status} />
             {item.destination && <span>· {item.destination}</span>}
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {item.status !== "archived" && (
             <PublishNowButton itemId={id} />
           )}
@@ -148,9 +149,9 @@ export default async function ItemDetailPage({
           <CardTitle>Copy</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="whitespace-pre-wrap text-sm">{item.body}</p>
+          <p className="whitespace-pre-wrap break-words text-sm">{item.body}</p>
           {item.hashtags.length > 0 && (
-            <p className="mt-3 text-sm text-primary">
+            <p className="mt-3 break-words text-sm text-primary">
               {item.hashtags.map((h) => `#${h}`).join(" ")}
             </p>
           )}
@@ -162,7 +163,8 @@ export default async function ItemDetailPage({
           <CardTitle>Publish results</CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
+          <div className="overflow-x-auto">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Platform</TableHead>
@@ -232,6 +234,7 @@ export default async function ItemDetailPage({
               })}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
     </div>

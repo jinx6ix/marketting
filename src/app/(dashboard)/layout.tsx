@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/supabase/server";
-import { Sidebar } from "@/components/sidebar";
-import { Topbar } from "@/components/topbar";
+import { DashboardShell } from "@/components/dashboard-shell";
 
 export default async function DashboardLayout({
   children,
@@ -22,16 +21,12 @@ export default async function DashboardLayout({
   ]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar
-          orgName={org?.name ?? "My organization"}
-          userEmail={user.email ?? ""}
-          failedCount={failedCount ?? 0}
-        />
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
-      </div>
-    </div>
+    <DashboardShell
+      orgName={org?.name ?? "My organization"}
+      userEmail={user.email ?? ""}
+      failedCount={failedCount ?? 0}
+    >
+      {children}
+    </DashboardShell>
   );
 }

@@ -335,54 +335,56 @@ export function Composer({
                 <Sparkles className="size-4 text-primary" />
                 <span className="text-sm font-medium">AI assist</span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                 <Input
                   value={brief}
                   onChange={(e) => setBrief(e.target.value)}
                   placeholder="Brief: 20% off 5-day Bali package for solo travelers…"
-                  className="flex-1"
+                  className="sm:flex-1"
                 />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={aiBusy !== null || (!brief && !title)}
-                  onClick={() => callAi("generate")}
-                >
-                  <Wand2 />
-                  {aiBusy === "generate" ? "Writing…" : "Generate"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={aiBusy !== null || !body}
-                  onClick={() => callAi("improve")}
-                >
-                  {aiBusy === "improve" ? "Improving…" : "Improve"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={aiBusy !== null || !body}
-                  onClick={() => callAi("hashtags")}
-                >
-                  <Hash />
-                  {aiBusy === "hashtags" ? "…" : "Hashtags"}
-                </Button>
-                {itemId && media.length > 0 && (
+                <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
-                    disabled={aiBusy !== null}
-                    onClick={analyzeMedia}
+                    disabled={aiBusy !== null || (!brief && !title)}
+                    onClick={() => callAi("generate")}
                   >
-                    <Eye />
-                    {aiBusy === "vision" ? "Analyzing…" : "Analyze media"}
+                    <Wand2 />
+                    {aiBusy === "generate" ? "Writing…" : "Generate"}
                   </Button>
-                )}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={aiBusy !== null || !body}
+                    onClick={() => callAi("improve")}
+                  >
+                    {aiBusy === "improve" ? "Improving…" : "Improve"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={aiBusy !== null || !body}
+                    onClick={() => callAi("hashtags")}
+                  >
+                    <Hash />
+                    {aiBusy === "hashtags" ? "…" : "Hashtags"}
+                  </Button>
+                  {itemId && media.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={aiBusy !== null}
+                      onClick={analyzeMedia}
+                    >
+                      <Eye />
+                      {aiBusy === "vision" ? "Analyzing…" : "Analyze media"}
+                    </Button>
+                  )}
+                </div>
               </div>
               {visionInsights && (
                 <div className="rounded border bg-background p-2 text-xs text-muted-foreground whitespace-pre-wrap">
