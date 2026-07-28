@@ -5,6 +5,7 @@ import { getAccountTokens } from "@/lib/social/accounts";
 import { SocialApiError, type PublishPayload } from "@/lib/social/types";
 import { nextRetryAt, tryAcquire, markRateLimited } from "./rate-limit";
 import { runJob } from "./runner";
+import { rollupItemStatus } from "./item-rollup";
 import type { Platform } from "@/types/database";
 
 interface MediaEntry {
@@ -133,61 +134,6 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
     return processed;
   });
-}
-
-async function rollupItemStatus(itemId: string): Promise<void> {
-  const admin = createAdminClient();
-  const { data: targets } = await admin
-    .from("post_targets")
-    .select("status")
-    .eq("item_id", itemId);
-  if (!targets || targets.length === 0) return;
-
-  const statuses = new Set(targets.map((t) => t.status));
-  const anyPendingWork =
-    statuses.has("pending") || statuses.has("queued") || statuses.has("publishing");
-  if (anyPendingWork) return; // still in flight — leave as 'publishing'
-
-  const published = targets.filter((t) => t.status === "published").length;
-  const failed = targets.filter((t) => t.status === "failed").length;
-
-  let status: "published" | "partially_published" | "failed";
-  if (published > 0 && failed === 0) status = "published";
-  else if (published > 0) status = "partially_published";
-  else status = "failed";
-
-  await admin.from("marketing_items").update({ status }).eq("id", itemId);
-
-  if (status !== "published") {
-    const { data: item } = await admin
-      .from("marketing_items")
-      .select("title")
-      .eq("id", itemId)
-      .single();
-    await sendFailureAlert(
-      `Post "${item?.title ?? itemId}" finished as ${status.replace("_", " ")} ` +
-        `(${published} published, ${failed} failed). ` +
-        `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/items/${itemId}`
-    );
-  }
-}
-
-/**
- * Optional ops alert: set ALERT_WEBHOOK_URL to a Slack/Discord-compatible
- * incoming webhook to get pinged when a publish ends up failed.
- */
-async function sendFailureAlert(text: string): Promise<void> {
-  const url = process.env.ALERT_WEBHOOK_URL;
-  if (!url) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, content: text }),
-    });
-  } catch {
-    // Alerting must never break the publish job.
-  }
 }
 
 /** Turn storage paths into signed/public URLs platforms can fetch. */

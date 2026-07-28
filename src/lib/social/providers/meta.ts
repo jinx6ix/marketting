@@ -13,7 +13,7 @@ import {
 } from "../types";
 import { redirectUri, formBody } from "../oauth";
 
-const GRAPH = "https://graph.facebook.com/v21.0";
+const GRAPH = "https://graph.facebook.com/v25.0";
 
 const tokenResponse = z.object({
   access_token: z.string(),
@@ -76,7 +76,7 @@ export const metaAdapter: SocialProviderAdapter = {
       ].join(","),
       response_type: "code",
     });
-    return `https://www.facebook.com/v21.0/dialog/oauth?${params}`;
+    return `https://www.facebook.com/v25.0/dialog/oauth?${params}`;
   },
 
   async exchangeCode(code) {

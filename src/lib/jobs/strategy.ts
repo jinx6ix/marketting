@@ -6,6 +6,11 @@ import {
   strategySystemPrompt,
   strategyUserPrompt,
 } from "@/lib/ai/prompts/strategy";
+import { isEastAfricanDestination } from "@/lib/ai/prompts/niche";
+import {
+  analyzeItemMedia,
+  type ItemMediaInsights,
+} from "@/lib/ai/media-insights";
 import type { Json } from "@/types/database";
 
 /**
@@ -25,6 +30,8 @@ export interface GapSnapshot {
     topDestinations: string[];
     bestPostingHours: { dow: number; hour: number; avgEngagementRate: number }[];
     topHashtags: string[];
+    /** AI vision insights on recent post media (what our photos/videos show). */
+    recentMediaInsights: { title: string; insights: ItemMediaInsights }[];
   };
   competitors: {
     name: string;
@@ -203,6 +210,7 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
         avgEngagement: latest?.avg_engagement ?? null,
         engagementByMediaType: avg(engagementByMediaType),
         topDestinations: [...destStats.entries()]
+          .filter(([destination]) => isEastAfricanDestination(destination))
           .map(([destination, s]) => ({
             destination,
             posts: s.posts,
@@ -219,6 +227,7 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
   // ── Computed gaps (deterministic) ──────────────────────────────────
   const ownDestSet = new Set(ownDestinations.map((d) => d.toLowerCase()));
   const destinationsCompetitorsWinOn = [...allCompDestinations.entries()]
+    .filter(([d]) => isEastAfricanDestination(d))
     .filter(([d]) => !ownDestSet.has(d.toLowerCase()))
     .sort((a, b) => b[1].totalEng / b[1].posts - a[1].totalEng / a[1].posts)
     .slice(0, 8)
@@ -238,6 +247,33 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
     .filter((h) => !ownTagSet.has(h.toLowerCase()))
     .slice(0, 12);
 
+  // ── Vision insights on our own recent media ────────────────────────
+  const recentMediaInsights: GapSnapshot["org"]["recentMediaInsights"] = [];
+  const { data: mediaItems } = await admin
+    .from("marketing_items")
+    .select("id, title, media, media_insights")
+    .eq("org_id", orgId)
+    .order("created_at", { ascending: false })
+    .limit(15);
+
+  let analyzed = 0;
+  for (const mi of mediaItems ?? []) {
+    const media = (mi.media ?? []) as unknown[];
+    if (media.length === 0) continue;
+    let insights = mi.media_insights as unknown as ItemMediaInsights | null;
+    if (!insights && analyzed < 5) {
+      analyzed++;
+      try {
+        insights = await analyzeItemMedia(mi.id);
+      } catch {
+        // vision failures must not block strategy generation
+      }
+    }
+    if (insights) {
+      recentMediaInsights.push({ title: mi.title, insights });
+    }
+  }
+
   return {
     org: {
       name: org?.name ?? "Your company",
@@ -253,6 +289,7 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
         avgEngagementRate: Number(h.avg_engagement_rate ?? 0),
       })),
       topHashtags: ownHashtags,
+      recentMediaInsights,
     },
     competitors: competitorSummaries,
     computedGaps: {

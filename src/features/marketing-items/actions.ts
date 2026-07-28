@@ -3,7 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/supabase/server";
+import { friendlyActionError } from "@/lib/jobs/action-errors";
 import { itemFormSchema, type ItemFormValues } from "./schemas";
+import { publishDue } from "@/lib/jobs/publish";
 import type { Json } from "@/types/database";
 
 export interface ActionResult {
@@ -41,7 +43,8 @@ export async function createItem(values: ItemFormValues): Promise<ActionResult> 
     })
     .select("id")
     .single();
-  if (error || !item) return { error: error?.message ?? "Insert failed" };
+  if (error || !item)
+    return { error: friendlyActionError(error, "Insert failed") };
 
   if (v.targets.length > 0) {
     const { error: targetError } = await supabase.from("post_targets").insert(
@@ -53,7 +56,7 @@ export async function createItem(values: ItemFormValues): Promise<ActionResult> 
         variant_body: t.variant_body ?? null,
       }))
     );
-    if (targetError) return { error: targetError.message };
+    if (targetError) return { error: friendlyActionError(targetError) };
   }
 
   revalidatePath("/items");
@@ -101,7 +104,7 @@ export async function updateItem(
       timezone: v.timezone ?? null,
     })
     .eq("id", id);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   // Reconcile targets: delete unpublished ones, re-insert current selection.
   await supabase
@@ -127,7 +130,7 @@ export async function updateItem(
           variant_body: t.variant_body ?? null,
         }))
       );
-      if (targetError) return { error: targetError.message };
+      if (targetError) return { error: friendlyActionError(targetError) };
     }
   }
 
@@ -142,7 +145,7 @@ export async function deleteItem(id: string): Promise<ActionResult> {
   if (!user || !orgId) return { error: "Unauthorized" };
 
   const { error } = await supabase.from("marketing_items").delete().eq("id", id);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   revalidatePath("/items");
   revalidatePath("/calendar");
@@ -160,7 +163,7 @@ export async function submitForReview(id: string): Promise<ActionResult> {
     .eq("id", id)
     .eq("org_id", orgId)
     .in("status", ["draft", "failed"]);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   revalidatePath("/items");
   revalidatePath(`/items/${id}`);
@@ -202,7 +205,7 @@ export async function approveItem(id: string): Promise<ActionResult> {
     .from("marketing_items")
     .update({ status: item.scheduled_at ? "scheduled" : "draft" })
     .eq("id", id);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   revalidatePath("/items");
   revalidatePath(`/items/${id}`);
@@ -220,7 +223,7 @@ export async function requestChanges(id: string): Promise<ActionResult> {
     .eq("id", id)
     .eq("org_id", ctx.orgId)
     .eq("status", "in_review");
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   revalidatePath("/items");
   revalidatePath(`/items/${id}`);
@@ -242,9 +245,102 @@ export async function rescheduleItem(
     })
     .eq("id", id)
     .in("status", ["draft", "scheduled", "failed"]);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyActionError(error) };
 
   revalidatePath("/calendar");
   revalidatePath("/items");
   return { id };
+}
+
+export interface PublishNowResult extends ActionResult {
+  queued?: number;
+  alreadyPublished?: number;
+}
+
+/**
+ * Queue item(s) for immediate publishing. Sets the item to `scheduled` at `now`
+ * and resets its targets (only the unpublished / failed / skipped ones) to
+ * `pending`. The existing `* * * * *` cron worker picks them up on the next
+ * tick — no separate code path needed.
+ *
+ * Available to all org members who can view the item (RLS read).
+ */
+export async function publishNow(id: string): Promise<PublishNowResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const { data: item } = await supabase
+    .from("marketing_items")
+    .select("status")
+    .eq("id", id)
+    .eq("org_id", orgId)
+    .single();
+  if (!item) return { error: "Item not found" };
+
+  if (item.status === "publishing" || item.status === "archived") {
+    return { error: `Cannot publish an item with status "${item.status}"` };
+  }
+
+  const isPartial = ["failed", "partially_published"].includes(item.status);
+
+  const { data: targets } = await supabase
+    .from("post_targets")
+    .select("id, status")
+    .eq("item_id", id);
+  if (!targets || targets.length === 0) {
+    return { error: "This item has no publish targets" };
+  }
+
+  const eligibleIds = isPartial
+    ? targets
+        .filter((t) => ["failed", "skipped"].includes(t.status))
+        .map((t) => t.id)
+    : targets
+        .filter((t) => t.status !== "published")
+        .map((t) => t.id);
+
+  if (eligibleIds.length === 0) {
+    return { error: "Nothing to publish — all targets are already published" };
+  }
+
+  const alreadyPublished = targets.filter((t) => t.status === "published").length;
+
+  const nowIso = new Date().toISOString();
+
+  const { error: itemErr } = await supabase
+    .from("marketing_items")
+    .update({
+      status: "scheduled",
+      scheduled_at: nowIso,
+    })
+    .eq("id", id)
+    .in("status", [
+      "draft",
+      "scheduled",
+      "in_review",
+      "failed",
+      "partially_published",
+    ]);
+  if (itemErr) return { error: friendlyActionError(itemErr) };
+
+  await supabase
+    .from("post_targets")
+    .update({
+      status: "pending",
+      retry_count: 0,
+      next_retry_at: null,
+      error: null,
+    })
+    .eq("item_id", id)
+    .in("id", eligibleIds)
+    .in("status", ["pending", "queued", "failed", "skipped"]);
+
+  revalidatePath("/items");
+  revalidatePath(`/items/${id}`);
+  revalidatePath("/calendar");
+
+  // Fire immediately — don't wait for the next cron tick.
+  publishDue().catch(() => null);
+
+  return { id, queued: eligibleIds.length, alreadyPublished };
 }

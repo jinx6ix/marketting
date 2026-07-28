@@ -42,6 +42,27 @@ export function resolveModel(provider: AiProviderName): string {
   return perProvider ?? AI_PROVIDERS[provider].defaultModel;
 }
 
+/**
+ * Vision (multimodal) models. NIM is primary; OpenRouter free vision model
+ * is the fallback. Groq has no stable free vision model, so it is skipped.
+ * Override via NIM_VISION_MODEL / NIM_VIDEO_MODEL / OPENROUTER_VISION_MODEL.
+ */
+export function visionModel(provider: AiProviderName, kind: "image" | "video"): string | null {
+  if (provider === "nim") {
+    return kind === "video"
+      ? process.env.NIM_VIDEO_MODEL ?? "nvidia/vila"
+      : process.env.NIM_VISION_MODEL ?? "meta/llama-3.2-90b-vision-instruct";
+  }
+  if (provider === "openrouter") {
+    // OpenRouter free VL models handle both images and video-as-URL poorly;
+    // use for images only.
+    return kind === "image"
+      ? process.env.OPENROUTER_VISION_MODEL ?? "qwen/qwen2.5-vl-72b-instruct:free"
+      : null;
+  }
+  return null;
+}
+
 /** Ordered chain: primary provider then fallbacks, keeping only configured ones. */
 export function providerChain(): AiProviderConfig[] {
   const primary = (process.env.AI_PROVIDER ?? "nim") as AiProviderName;

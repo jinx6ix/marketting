@@ -137,6 +137,7 @@ export interface Database {
           title: string;
           body: string;
           media: Json;
+          media_insights: Json | null;
           promo: Json | null;
           hashtags: string[];
           destination: string | null;

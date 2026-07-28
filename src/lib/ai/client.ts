@@ -1,7 +1,12 @@
 import "server-only";
 import OpenAI from "openai";
 import { z } from "zod";
-import { providerChain, resolveModel, type AiProviderConfig } from "./providers";
+import {
+  providerChain,
+  resolveModel,
+  visionModel,
+  type AiProviderConfig,
+} from "./providers";
 
 export interface AiCallResult {
   text: string;
@@ -131,6 +136,91 @@ export async function aiJson<T>(
     return { data: reparsed.data, provider: repair.provider, model: repair.model };
   }
   throw new Error(`AI JSON validation failed after repair: ${reparsed.error}`);
+}
+
+export interface VisionOptions {
+  system: string;
+  user: string;
+  /** Publicly fetchable URL (signed Supabase URL is fine). */
+  mediaUrl: string;
+  mediaType: "image" | "video";
+  maxTokens?: number;
+}
+
+/**
+ * Multimodal call: image/video + prompt → JSON, zod-validated.
+ * Walks the provider chain like aiChat, skipping providers with no
+ * suitable vision model. NIM inlines small images as base64 (its
+ * image_url support prefers data URLs); larger media is passed by URL.
+ */
+export async function aiVisionJson<T>(
+  schema: z.ZodType<T>,
+  opts: VisionOptions
+): Promise<{ data: T; provider: string; model: string }> {
+  const chain = providerChain();
+  let lastError: unknown = new Error(
+    `No provider with a ${opts.mediaType} vision model configured`
+  );
+
+  for (const cfg of chain) {
+    const model = visionModel(cfg.name, opts.mediaType);
+    if (!model) continue;
+    try {
+      const url =
+        cfg.name === "nim" && opts.mediaType === "image"
+          ? await toDataUrlIfSmall(opts.mediaUrl)
+          : opts.mediaUrl;
+      const client = clientFor(cfg);
+      const res = await client.chat.completions.create({
+        model,
+        temperature: 0.3,
+        max_tokens: opts.maxTokens ?? 1024,
+        messages: [
+          { role: "system", content: opts.system },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: opts.user },
+              { type: "image_url", image_url: { url } },
+            ],
+          },
+        ],
+      });
+      const text = res.choices[0]?.message?.content ?? "";
+      if (!text) throw new Error("Empty completion");
+      const parsed = tryParse(schema, text);
+      if (!parsed.success) {
+        throw new Error(`vision JSON validation failed: ${parsed.error}`);
+      }
+      return { data: parsed.data, provider: cfg.name, model };
+    } catch (e) {
+      lastError = e;
+      const status = (e as { status?: number }).status;
+      // 400/404 here usually means the model doesn't exist or rejects the
+      // media type — fall through to the next provider rather than aborting.
+      if (status && status < 429 && status !== 408 && status !== 400 && status !== 404) {
+        throw e;
+      }
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("All vision providers failed");
+}
+
+const INLINE_LIMIT_BYTES = 170_000; // NIM inline base64 limit is ~180KB
+
+async function toDataUrlIfSmall(url: string): Promise<string> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return url;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength > INLINE_LIMIT_BYTES) return url;
+    const contentType = res.headers.get("content-type") ?? "image/jpeg";
+    return `data:${contentType};base64,${buf.toString("base64")}`;
+  } catch {
+    return url;
+  }
 }
 
 function tryParse<T>(

@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
-import { Sparkles, Wand2, Hash, Upload, X as XIcon } from "lucide-react";
+import { Sparkles, Wand2, Hash, Upload, X as XIcon, Eye } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { createItem, updateItem } from "../actions";
 import type { ItemFormValues } from "../schemas";
@@ -107,6 +107,7 @@ export function Composer({
   // AI
   const [aiBusy, setAiBusy] = useState<string | null>(null);
   const [brief, setBrief] = useState("");
+  const [visionInsights, setVisionInsights] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
 
@@ -126,6 +127,32 @@ export function Composer({
           .map((p) => PLATFORM_LABELS[p])
           .join(", ")}`
       : null;
+
+  async function analyzeMedia() {
+    if (!itemId || media.length === 0) return;
+    setAiBusy("vision");
+    setVisionInsights(null);
+    try {
+      const res = await fetch("/api/ai/media-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId }),
+      });
+      const data = (await res.json()) as {
+        insights?: { results: { insight?: { description: string; suggested_hook: string; wildlife_or_landmarks: string[] } }[] };
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? "Vision analysis failed");
+      const lines = (data.insights?.results ?? [])
+        .filter((r) => r.insight)
+        .map((r, i) => `Media ${i + 1}: ${r.insight!.suggested_hook} (${r.insight!.wildlife_or_landmarks.join(", ") || r.insight!.description})`);
+      setVisionInsights(lines.join("\n") || "No insights returned.");
+    } catch (e) {
+      setVisionInsights(`Error: ${e instanceof Error ? e.message : "unknown"}`);
+    } finally {
+      setAiBusy(null);
+    }
+  }
 
   async function callAi(action: "generate" | "improve" | "hashtags") {
     setAiBusy(action);
@@ -344,7 +371,24 @@ export function Composer({
                   <Hash />
                   {aiBusy === "hashtags" ? "…" : "Hashtags"}
                 </Button>
+                {itemId && media.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={aiBusy !== null}
+                    onClick={analyzeMedia}
+                  >
+                    <Eye />
+                    {aiBusy === "vision" ? "Analyzing…" : "Analyze media"}
+                  </Button>
+                )}
               </div>
+              {visionInsights && (
+                <div className="rounded border bg-background p-2 text-xs text-muted-foreground whitespace-pre-wrap">
+                  {visionInsights}
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">

@@ -12,7 +12,10 @@
     "seed": "tsx scripts/seed.ts",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:ai": "tsx scripts/smoke-ai.ts",
-    "rls:check": "tsx scripts/rls-check.ts"
+    "rls:check": "tsx scripts/rls-check.ts",
+    "reset:stale-publishes": "tsx scripts/reset-stale-publishes.ts",
+    "fix:approvals-constraint": "tsx scripts/fix-approvals-constraint.ts",
+    "preflight": "tsx scripts/preflight.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.1.1",

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAdapter, isPlatform } from "@/lib/social/registry";
-import { upsertSocialAccount } from "@/lib/social/accounts";
+import {
+  ensureLongLivedTokens,
+  upsertSocialAccount,
+} from "@/lib/social/accounts";
 import { appUrl } from "@/lib/social/oauth";
 
 export async function GET(
@@ -40,10 +43,16 @@ export async function GET(
 
   try {
     const adapter = getAdapter(platform);
-    const tokens = await adapter.exchangeCode(
+    const exchanged = await adapter.exchangeCode(
       code,
       stateRow.code_verifier ?? undefined
     );
+    // For platforms that hand out short-lived tokens (X, YouTube, TikTok,
+    // Pinterest, LinkedIn), immediately trade them in for the longest
+    // window the refresh path returns. Saves the very first persisted
+    // token with the freshest possible expiry so it doesn't expire
+    // minutes after the user finishes connecting.
+    const tokens = await ensureLongLivedTokens(platform, exchanged);
     const profiles = await adapter.fetchProfile(tokens);
 
     // Connect all discovered profiles (e.g. all FB pages / IG accounts).

@@ -1,4 +1,5 @@
 import type { Platform } from "@/types/database";
+import { NICHE_DIRECTIVE } from "./niche";
 
 const PLATFORM_STYLE: Record<Platform, string> = {
   facebook:
@@ -21,7 +22,8 @@ export function contentSystemPrompt(orgNiches: string[]): string {
     orgNiches.length ? ` specializing in: ${orgNiches.join(", ")}` : ""
   }.
 You write compelling, booking-driving content. You know travel marketing: sell the feeling and the experience, use sensory language, create urgency with scarcity (limited spots, seasonal windows), and always include a clear call to action.
-Never invent specific prices, dates, or availability unless provided. Never use clichés like "hidden gem" or "paradise on earth" more than once.`;
+Never invent specific prices, dates, or availability unless provided. Never use clichés like "hidden gem" or "paradise on earth" more than once.
+${NICHE_DIRECTIVE}`;
 }
 
 export function generatePostPrompt(params: {
@@ -54,7 +56,7 @@ export function adaptForPlatformPrompt(masterCopy: string, platform: Platform): 
 export function hashtagsPrompt(text: string, destination?: string): string {
   return `Suggest 10 high-performing hashtags for this travel post${
     destination ? ` about ${destination}` : ""
-  }:\n\n${text}\n\nMix: 3 high-volume generic travel tags, 4 niche/destination tags, 3 branded or community tags. Return as a JSON object: {"hashtags": ["tag1", ...]} with no # symbols.`;
+  }:\n\n${text}\n\nMix: 3 high-volume safari/Kenya travel tags (e.g. MagicalKenya, KenyaSafari, AfricanSafari), 4 niche/destination tags for the specific Kenyan or East African location, 3 branded or community tags. All tags must fit East African safaris & tours. Return as a JSON object: {"hashtags": ["tag1", ...]} with no # symbols.`;
 }
 
 export function sentimentPrompt(mentions: { id: string; content: string }[]): string {

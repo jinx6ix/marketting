@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
 import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
+import { PublishNowButton } from "@/features/marketing-items/components/publish-now-button";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -89,6 +90,9 @@ export default async function ItemDetailPage({
         {["draft", "failed"].includes(item.status) && (
           <ApprovalBar itemId={id} status={item.status} canApprove={canApprove} />
         )}
+        <div className="flex items-center justify-end">
+          <PublishNowButton itemId={id} />
+        </div>
         <Composer
           orgId={orgId!}
           itemId={id}
@@ -125,9 +129,14 @@ export default async function ItemDetailPage({
             {item.destination && <span>· {item.destination}</span>}
           </div>
         </div>
-        <Link href="/items" className="text-sm text-primary hover:underline">
-          ← All items
-        </Link>
+        <div className="flex items-center gap-3">
+          {item.status !== "archived" && (
+            <PublishNowButton itemId={id} />
+          )}
+          <Link href="/items" className="text-sm text-primary hover:underline">
+            ← All items
+          </Link>
+        </div>
       </div>
 
       {item.status === "in_review" && (
@@ -163,6 +172,7 @@ export default async function ItemDetailPage({
                 <TableHead>Comments</TableHead>
                 <TableHead>Impressions</TableHead>
                 <TableHead>Link</TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -172,6 +182,8 @@ export default async function ItemDetailPage({
                   handle: string | null;
                   display_name: string | null;
                 } | null;
+                const retryable =
+                  t.status === "failed" || t.status === "skipped";
                 return (
                   <TableRow key={t.id}>
                     <TableCell>{PLATFORM_LABELS[t.platform as Platform]}</TableCell>
@@ -199,6 +211,18 @@ export default async function ItemDetailPage({
                         >
                           View
                         </a>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {retryable ? (
+                        <PublishNowButton
+                          itemId={id}
+                          label="Retry"
+                          icon="retry"
+                          variant="outline"
+                        />
                       ) : (
                         "—"
                       )}
