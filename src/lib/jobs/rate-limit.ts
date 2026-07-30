@@ -24,14 +24,15 @@ export async function markRateLimited(
   platform: Platform,
   retryAfterMs: number
 ): Promise<void> {
-  const admin = createAdminClient();
-  await admin
-    .rpc("mark_platform_rate_limited", {
+  try {
+    const admin = createAdminClient();
+    await admin.rpc("mark_platform_rate_limited", {
       p_platform: platform,
       p_until: new Date(Date.now() + retryAfterMs).toISOString(),
-    })
-    .then(() => undefined)
-    .catch(() => undefined);
+    });
+  } catch {
+    // Metering must never break publishing — fail open.
+  }
 }
 
 /** Take one request slot; returns false if blocked or budget exhausted. */
