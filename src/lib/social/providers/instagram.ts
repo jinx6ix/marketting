@@ -16,7 +16,7 @@ import {
 } from "../types";
 import { metaAdapter } from "./meta";
 
-const GRAPH = "https://graph.facebook.com/v21.0";
+const GRAPH = "https://graph.facebook.com/v25.0";
 
 /**
  * Instagram (Business/Creator accounts) via Meta Graph API.

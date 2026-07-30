@@ -49,7 +49,7 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
     for (const target of due) {
       const platform = target.platform as Platform;
-      if (!tryAcquire(platform)) continue;
+      if (!(await tryAcquire(platform))) continue;
 
       // claim: pending/queued -> publishing (optimistic lock via status filter)
       const { data: claimed } = await admin
@@ -68,6 +68,21 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
         .eq("id", target.item_id)
         .eq("status", "scheduled");
 
+      // Idempotency: a previous attempt that crashed between the platform
+      // call and the DB write leaves external_post_id set. Never re-post.
+      if (target.external_post_id) {
+        await finalizeTarget(admin, target.id, {
+          status: "published",
+          external_post_id: target.external_post_id,
+          external_url: target.external_url ?? null,
+          published_at: target.published_at ?? new Date().toISOString(),
+          error: null,
+        });
+        processed++;
+        continue;
+      }
+
+      let published = false;
       try {
         const { account, tokens } = await getAccountTokens(
           target.social_account_id
@@ -95,23 +110,28 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
         const payload: PublishPayload = { text, mediaUrls, mediaType };
         const result = await adapter.publish(tokens, account, payload);
+        published = true;
 
-        await admin
-          .from("post_targets")
-          .update({
-            status: "published",
-            external_post_id: result.externalPostId,
-            external_url: result.externalUrl ?? null,
-            published_at: new Date().toISOString(),
-            error: null,
-          })
-          .eq("id", target.id);
+        // The platform accepted the post: this write MUST land, or a retry
+        // would double-post. Retry the update a few times before giving up.
+        await finalizeTarget(admin, target.id, {
+          status: "published",
+          external_post_id: result.externalPostId,
+          external_url: result.externalUrl ?? null,
+          published_at: new Date().toISOString(),
+          error: null,
+        });
         processed++;
       } catch (e) {
+        // If the platform accepted but the finalize write failed after
+        // retries, do NOT reset to pending — that would double-post. Leave
+        // the target in `publishing` for the stale reaper / operator.
+        if (published) continue;
+
         const message = e instanceof Error ? e.message : String(e);
         const retryable = e instanceof SocialApiError ? e.retryable : true;
         if (e instanceof SocialApiError && e.retryAfterMs) {
-          markRateLimited(platform, e.retryAfterMs);
+          await markRateLimited(platform, e.retryAfterMs);
         }
 
         const retry = retryable ? nextRetryAt(target.retry_count) : null;
@@ -134,6 +154,35 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
     return processed;
   });
+}
+
+/**
+ * Persist a target's final publish state, retrying transient DB failures.
+ * Used after the platform accepted a post — losing this write would cause
+ * a duplicate post on the next worker tick.
+ */
+async function finalizeTarget(
+  admin: ReturnType<typeof createAdminClient>,
+  targetId: string,
+  fields: {
+    status: "published";
+    external_post_id: string;
+    external_url: string | null;
+    published_at: string;
+    error: null;
+  }
+): Promise<void> {
+  let lastError: string | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { error } = await admin
+      .from("post_targets")
+      .update(fields)
+      .eq("id", targetId);
+    if (!error) return;
+    lastError = error.message;
+    await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+  }
+  throw new Error(`Failed to persist published state: ${lastError}`);
 }
 
 /** Turn storage paths into signed/public URLs platforms can fetch. */

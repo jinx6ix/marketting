@@ -1,19 +1,13 @@
 import "server-only";
+import { createAdminClient } from "@/lib/supabase/admin";
 import type { Platform } from "@/types/database";
 
 /**
- * In-memory token buckets per platform. Serverless instances each get their
- * own bucket — budgets below are set conservatively enough that N instances
- * still stay under real platform limits. 429 retryAfterMs from the API is
- * always honored on top of this.
+ * DB-backed per-platform rate limiting (migration 0012). All serverless
+ * instances share one fixed 1-minute window per platform, and 429 backoffs
+ * from the APIs are honored globally. Fails open on DB errors — metering
+ * must never take publishing down.
  */
-
-interface Bucket {
-  tokens: number;
-  lastRefill: number;
-}
-
-const buckets = new Map<string, Bucket>();
 
 /** requests per minute budget per platform (conservative) */
 const BUDGETS: Record<Platform, number> = {
@@ -26,41 +20,29 @@ const BUDGETS: Record<Platform, number> = {
   pinterest: 60,
 };
 
-const blockedUntil = new Map<Platform, number>();
-
-export function markRateLimited(platform: Platform, retryAfterMs: number): void {
-  blockedUntil.set(platform, Date.now() + retryAfterMs);
+export async function markRateLimited(
+  platform: Platform,
+  retryAfterMs: number
+): Promise<void> {
+  const admin = createAdminClient();
+  await admin
+    .rpc("mark_platform_rate_limited", {
+      p_platform: platform,
+      p_until: new Date(Date.now() + retryAfterMs).toISOString(),
+    })
+    .then(() => undefined)
+    .catch(() => undefined);
 }
 
-export function isBlocked(platform: Platform): boolean {
-  const until = blockedUntil.get(platform);
-  if (!until) return false;
-  if (Date.now() >= until) {
-    blockedUntil.delete(platform);
-    return false;
-  }
-  return true;
-}
-
-/** Take one request slot; returns false if the budget is exhausted. */
-export function tryAcquire(platform: Platform): boolean {
-  if (isBlocked(platform)) return false;
-
-  const budget = BUDGETS[platform];
-  const now = Date.now();
-  let bucket = buckets.get(platform);
-  if (!bucket) {
-    bucket = { tokens: budget, lastRefill: now };
-    buckets.set(platform, bucket);
-  }
-  // refill continuously
-  const elapsed = (now - bucket.lastRefill) / 60_000;
-  bucket.tokens = Math.min(budget, bucket.tokens + elapsed * budget);
-  bucket.lastRefill = now;
-
-  if (bucket.tokens < 1) return false;
-  bucket.tokens -= 1;
-  return true;
+/** Take one request slot; returns false if blocked or budget exhausted. */
+export async function tryAcquire(platform: Platform): Promise<boolean> {
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("try_acquire_platform_slot", {
+    p_platform: platform,
+    p_budget: BUDGETS[platform],
+  });
+  if (error) return true; // fail open
+  return data === true;
 }
 
 /** Exponential retry schedule for failed publishes: 1m, 5m, 30m. */

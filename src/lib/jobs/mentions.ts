@@ -30,7 +30,7 @@ export async function collectMentions(): Promise<ReturnType<typeof runJob>> {
       const platform = acc.platform as Platform;
       const adapter = getAdapter(platform);
       if (!adapter.fetchMentions || !adapter.capabilities.mentions) continue;
-      if (!tryAcquire(platform)) continue;
+      if (!(await tryAcquire(platform))) continue;
 
       const meta = acc.metadata as { last_mentions_fetch?: string };
       const since = meta?.last_mentions_fetch
@@ -76,7 +76,7 @@ export async function collectMentions(): Promise<ReturnType<typeof runJob>> {
           .eq("id", acc.id);
       } catch (e) {
         if (e instanceof SocialApiError && e.retryAfterMs) {
-          markRateLimited(platform, e.retryAfterMs);
+          await markRateLimited(platform, e.retryAfterMs);
         }
       }
     }

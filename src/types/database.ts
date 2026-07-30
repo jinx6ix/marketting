@@ -442,6 +442,14 @@ export interface Database {
       is_org_member: { Args: { p_org: string }; Returns: boolean };
       has_org_role: { Args: { p_org: string; p_roles: string[] }; Returns: boolean };
       increment_ai_usage: { Args: { p_org: string }; Returns: number };
+      try_acquire_platform_slot: {
+        Args: { p_platform: string; p_budget: number };
+        Returns: boolean;
+      };
+      mark_platform_rate_limited: {
+        Args: { p_platform: string; p_until: string };
+        Returns: undefined;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
