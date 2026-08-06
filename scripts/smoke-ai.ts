@@ -28,7 +28,7 @@ const PROVIDERS = {
   openrouter: {
     baseURL: "https://openrouter.ai/api/v1",
     apiKeyEnv: "OPENROUTER_API_KEY",
-    defaultModel: "meta-llama/llama-3.3-70b-instruct:free",
+    defaultModel: "nvidia/nemotron-3-super-120b-a12b:free",
     modelEnv: "OPENROUTER_MODEL",
   },
 } as const;

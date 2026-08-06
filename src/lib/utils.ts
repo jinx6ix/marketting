@@ -17,6 +17,14 @@ export function formatPercent(n: number | null | undefined, digits = 1): string 
   return `${n.toFixed(digits)}%`;
 }
 
+/**
+ * ISO timestamp `days` days before now. For dynamic server components,
+ * where reading the clock per-request is intended.
+ */
+export function daysAgoIso(days: number): string {
+  return new Date(Date.now() - days * 86400_000).toISOString();
+}
+
 export function relativeTime(date: string | Date): string {
   const d = typeof date === "string" ? new Date(date) : date;
   const diff = Date.now() - d.getTime();

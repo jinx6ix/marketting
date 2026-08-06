@@ -81,6 +81,8 @@ export default async function InboxPage({
     return s ? `/inbox?${s}` : "/inbox";
   };
 
+  const totalPages = Math.max(1, Math.ceil((totalCount ?? 0) / PAGE_SIZE));
+
   const FILTERS = [
     { label: "All", href: withParam("filter") },
     { label: "Unread", href: withParam("filter", "unread") },
@@ -211,6 +213,32 @@ export default async function InboxPage({
               </p>
             )}
           </div>
+
+          {totalPages > 1 && (
+            <div className="flex flex-col items-start justify-between gap-2 text-sm sm:flex-row sm:items-center">
+              <span className="text-muted-foreground">
+                Page {page} of {totalPages} · {totalCount} mentions
+              </span>
+              <div className="flex gap-2">
+                {page > 1 && (
+                  <Link
+                    href={withParam("page", String(page - 1))}
+                    className="rounded-md border px-3 py-1 hover:bg-accent"
+                  >
+                    ← Newer
+                  </Link>
+                )}
+                {page < totalPages && (
+                  <Link
+                    href={withParam("page", String(page + 1))}
+                    className="rounded-md border px-3 py-1 hover:bg-accent"
+                  >
+                    Older →
+                  </Link>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div>

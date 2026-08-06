@@ -31,18 +31,30 @@ export async function GET(
 
   const admin = createAdminClient();
 
-  // Validate + consume state
+  // Validate + consume state. Instagram shares the Meta OAuth dialog, whose
+  // registered redirect URI is the *facebook* callback — so an Instagram
+  // connect legitimately lands here with platform=facebook and an
+  // instagram state row. The state row is what the user actually initiated.
   const { data: stateRow } = await admin
     .from("oauth_states")
     .select("*")
     .eq("state", state)
     .single();
-  if (!stateRow || stateRow.platform !== platform) return fail("invalid_state");
+  const metaFamily =
+    platform === "facebook" && stateRow?.platform === "instagram";
+  if (
+    !stateRow ||
+    (stateRow.platform !== platform && !metaFamily) ||
+    !isPlatform(stateRow.platform)
+  ) {
+    return fail("invalid_state");
+  }
+  const effectivePlatform = stateRow.platform;
   await admin.from("oauth_states").delete().eq("state", state);
   if (new Date(stateRow.expires_at) < new Date()) return fail("state_expired");
 
   try {
-    const adapter = getAdapter(platform);
+    const adapter = getAdapter(effectivePlatform);
     const exchanged = await adapter.exchangeCode(
       code,
       stateRow.code_verifier ?? undefined
@@ -52,7 +64,7 @@ export async function GET(
     // window the refresh path returns. Saves the very first persisted
     // token with the freshest possible expiry so it doesn't expire
     // minutes after the user finishes connecting.
-    const tokens = await ensureLongLivedTokens(platform, exchanged);
+    const tokens = await ensureLongLivedTokens(effectivePlatform, exchanged);
     const profiles = await adapter.fetchProfile(tokens);
 
     // Connect all discovered profiles (e.g. all FB pages / IG accounts).
@@ -60,7 +72,7 @@ export async function GET(
       await upsertSocialAccount({
         orgId: stateRow.org_id,
         userId: stateRow.user_id,
-        platform,
+        platform: effectivePlatform,
         profile,
         userTokens: tokens,
       });
@@ -68,7 +80,9 @@ export async function GET(
 
     const dest = stateRow.redirect_to ?? "/settings/accounts";
     return NextResponse.redirect(
-      appUrl(`${dest}${dest.includes("?") ? "&" : "?"}connected=${platform}`)
+      appUrl(
+        `${dest}${dest.includes("?") ? "&" : "?"}connected=${effectivePlatform}`
+      )
     );
   } catch (e) {
     const message = e instanceof Error ? e.message : "connection_failed";

@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
-import { formatNumber } from "@/lib/utils";
+import { daysAgoIso, formatNumber } from "@/lib/utils";
 import Link from "next/link";
 import type { Platform } from "@/types/database";
 
@@ -28,7 +28,7 @@ export const metadata = { title: "Analytics" };
 export default async function AnalyticsPage() {
   const { orgId, supabase } = await getSessionContext();
 
-  const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+  const since = daysAgoIso(30).slice(0, 10);
 
   const [
     { data: accounts },

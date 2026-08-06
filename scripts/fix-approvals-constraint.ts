@@ -31,6 +31,7 @@ const STATEMENTS = [
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+async function main() {
 if (DATABASE_URL) {
   try {
     // Optional: if `pg` is installed in the project, run the SQL directly.
@@ -71,3 +72,9 @@ console.log(STATEMENTS.join("\n"));
 console.log(
   "\n[fix] After running, click 'Submit for review' again — the constraint allowlist now includes 'in_review'."
 );
+}
+
+main().catch((e) => {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exit(1);
+});

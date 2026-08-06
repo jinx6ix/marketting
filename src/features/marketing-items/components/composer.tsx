@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 import { Sparkles, Wand2, Hash, Upload, X as XIcon, Eye } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { createItem, updateItem } from "../actions";
+import { createItem, publishNow, updateItem } from "../actions";
 import type { ItemFormValues } from "../schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -229,8 +229,12 @@ export function Composer({
     }
   }
 
-  function submit() {
+  function submit(publish = false) {
     setError(null);
+    if (publish && selectedAccounts.size === 0) {
+      setError("Select at least one account under “Publish to” first.");
+      return;
+    }
     const values: ItemFormValues = {
       type,
       title,
@@ -265,9 +269,20 @@ export function Composer({
         : await createItem(values);
       if (result.error) {
         setError(result.error);
-      } else {
-        router.push("/items");
+        return;
       }
+      if (publish && result.id) {
+        // Targets are now saved — safe to queue the actual publish.
+        const pub = await publishNow(result.id);
+        if (pub.error) {
+          setError(pub.error);
+          return;
+        }
+        router.push(`/items/${result.id}`);
+        router.refresh();
+        return;
+      }
+      router.push("/items");
     });
   }
 
@@ -657,7 +672,7 @@ export function Composer({
           className="w-full"
           size="lg"
           disabled={pending || !title || uploading}
-          onClick={submit}
+          onClick={() => submit()}
         >
           {pending
             ? "Saving…"
@@ -667,6 +682,24 @@ export function Composer({
                 ? "Save changes"
                 : "Save draft"}
         </Button>
+        {!scheduledAt && (
+          <Button
+            variant="secondary"
+            className="w-full"
+            size="lg"
+            disabled={
+              pending || !title || uploading || selectedAccounts.size === 0
+            }
+            onClick={() => submit(true)}
+            title={
+              selectedAccounts.size === 0
+                ? "Select at least one account under “Publish to”"
+                : undefined
+            }
+          >
+            {pending ? "Saving…" : "Save & publish now"}
+          </Button>
+        )}
       </div>
     </div>
   );

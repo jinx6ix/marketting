@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Plug } from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +44,17 @@ export default async function AccountsSettingsPage({
     )
     .eq("org_id", orgId!)
     .order("platform");
+
+  // Token columns are hidden from the authenticated role (column-level
+  // grants, migration 0002) — check refresh-token presence via the admin
+  // client. Only the boolean leaves the server.
+  const { data: refreshRows } = await createAdminClient()
+    .from("social_accounts")
+    .select("id, refresh_token_enc")
+    .eq("org_id", orgId!);
+  const autoRenews = new Set(
+    (refreshRows ?? []).filter((r) => r.refresh_token_enc).map((r) => r.id)
+  );
 
   const byPlatform = new Map<Platform, NonNullable<typeof accounts>>();
   for (const account of accounts ?? []) {
@@ -131,14 +143,19 @@ export default async function AccountsSettingsPage({
                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                           {account.handle && <span>@{account.handle}</span>}
                           <StatusBadge status={account.status} />
-                          {account.token_expires_at && (
-                            <span>
-                              · token expires{" "}
-                              {new Date(
-                                account.token_expires_at
-                              ).toLocaleDateString()}
-                            </span>
-                          )}
+                          {account.token_expires_at &&
+                            (autoRenews.has(account.id) ? (
+                              <span title="The access token is renewed automatically before each use — no action needed.">
+                                · token auto-renews
+                              </span>
+                            ) : (
+                              <span>
+                                · token expires{" "}
+                                {new Date(
+                                  account.token_expires_at
+                                ).toLocaleDateString()}
+                              </span>
+                            ))}
                         </div>
                       </div>
                     </div>

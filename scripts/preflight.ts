@@ -13,6 +13,7 @@
  * Usage: npm run preflight
  */
 import { config } from "dotenv";
+import { createClient } from "@supabase/supabase-js";
 
 config({ path: ".env.local" });
 
@@ -105,8 +106,8 @@ if (!URL || !SERVICE_KEY) {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-const { createClient } = await import("@supabase/supabase-js");
-const admin = createClient(URL, SERVICE_KEY, {
+async function main() {
+const admin = createClient(URL!, SERVICE_KEY!, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
@@ -159,18 +160,22 @@ if (accErr) {
   for (const a of accounts ?? []) {
     const label = `${PLATFORM_LABEL[a.platform] ?? a.platform} @${a.handle ?? "?"}`;
     const hasToken = !!a.access_token_enc;
+    const hasRefresh = !!a.refresh_token_enc;
     const expiresAt = a.token_expires_at ? new Date(a.token_expires_at).getTime() : null;
     const isExpired = expiresAt !== null && expiresAt < now;
     const statusOk = a.status === "active";
-    report(
-      `${label}: ${a.status}`,
-      hasToken && statusOk && !isExpired,
-      [
-        hasToken ? "token-stored" : "NO-TOKEN",
-        a.status,
-        isExpired ? "EXPIRED" : expiresAt ? "valid-until" : "no-expiry",
-      ].join(" / ")
-    );
+    const detail = [
+      hasToken ? "token-stored" : "NO-TOKEN",
+      a.status,
+      isExpired ? "EXPIRED" : expiresAt ? "valid-until" : "no-expiry",
+    ].join(" / ");
+    if (hasToken && statusOk && isExpired && hasRefresh) {
+      // Expired access token but a refresh token is stored — the proactive
+      // refresh in src/lib/social/accounts.ts will renew it on next use.
+      warn(`${label}: ${a.status}`, `${detail} — will auto-refresh on use`);
+    } else {
+      report(`${label}: ${a.status}`, hasToken && statusOk && !isExpired, detail);
+    }
   }
 }
 
@@ -196,3 +201,9 @@ if (isDev) {
 // Summary
 console.log(`\n== ${passed} passed, ${warnings} warnings, ${failed} failed ==`);
 process.exit(failed > 0 ? 1 : 0);
+}
+
+main().catch((err) => {
+  console.error("preflight crashed:", err);
+  process.exit(1);
+});

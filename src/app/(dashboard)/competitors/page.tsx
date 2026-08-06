@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Sparkline } from "@/components/charts/sparkline";
 import { PLATFORM_LABELS } from "@/components/charts/theme";
-import { formatNumber } from "@/lib/utils";
+import { daysAgoIso, formatNumber } from "@/lib/utils";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Competitors" };
@@ -32,7 +32,7 @@ export default async function CompetitorsPage({
     return <CompetitorForm />;
   }
 
-  const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+  const since = daysAgoIso(30);
 
   const [{ data: competitors }, { data: latest }, { data: history }] =
     await Promise.all([

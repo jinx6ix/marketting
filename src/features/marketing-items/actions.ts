@@ -288,7 +288,10 @@ export async function publishNow(id: string): Promise<PublishNowResult> {
     .select("id, status")
     .eq("item_id", id);
   if (!targets || targets.length === 0) {
-    return { error: "This item has no publish targets" };
+    return {
+      error:
+        "This item has no saved publish targets. Select accounts under “Publish to” and save (or use “Save & publish now”).",
+    };
   }
 
   const eligibleIds = isPartial

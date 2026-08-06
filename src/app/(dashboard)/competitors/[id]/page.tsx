@@ -24,7 +24,7 @@ import {
   ManualSnapshotForm,
   DeleteCompetitorButton,
 } from "@/features/competitors/components/snapshot-form";
-import { formatNumber, relativeTime } from "@/lib/utils";
+import { daysAgoIso, formatNumber, relativeTime } from "@/lib/utils";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Competitor" };
@@ -56,8 +56,8 @@ export default async function CompetitorDetailPage({
 
   const accounts = competitor.competitor_accounts ?? [];
   const accountIds = accounts.map((a) => a.id);
-  const since = new Date(Date.now() - 90 * 86400_000).toISOString();
-  const since30 = new Date(Date.now() - 30 * 86400_000).toISOString();
+  const since = daysAgoIso(90);
+  const since30 = daysAgoIso(30);
 
   const [
     { data: snapshots },

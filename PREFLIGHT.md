@@ -21,6 +21,10 @@ Verifies, with no side effects:
    ```bash
    npm run fix:approvals-constraint
    ```
+   Note: this check needs the read-only `exec` RPC from migration
+   `supabase/migrations/0013_exec_rpc.sql`. Until you apply that in the
+   Supabase SQL Editor (once), preflight reports the check as a warning
+   instead of verifying it.
 5. Every connected social account has a stored token and isn't expired.
 6. In production, `pg_cron` is reachable (else migrations `0008`/`0010`
    haven't been applied). In dev it just reminds you to run the worker.

@@ -90,9 +90,11 @@ export default async function ItemDetailPage({
         {["draft", "failed"].includes(item.status) && (
           <ApprovalBar itemId={id} status={item.status} canApprove={canApprove} />
         )}
-        <div className="flex items-center justify-end">
-          <PublishNowButton itemId={id} />
-        </div>
+        {(targets ?? []).length > 0 && (
+          <div className="flex items-center justify-end">
+            <PublishNowButton itemId={id} />
+          </div>
+        )}
         <Composer
           orgId={orgId!}
           itemId={id}
