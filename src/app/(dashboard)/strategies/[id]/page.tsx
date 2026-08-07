@@ -11,6 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { RecommendationActions } from "@/features/strategies/components/strategy-actions";
+import { DeleteButton } from "@/components/delete-button";
+import { deleteStrategy } from "@/features/strategies/actions";
 import { relativeTime } from "@/lib/utils";
 
 export const metadata = { title: "Strategy" };
@@ -72,9 +74,17 @@ export default async function StrategyDetailPage({
             )}
           </div>
         </div>
-        <Link href="/strategies" className="text-sm text-primary hover:underline">
-          ← All strategies
-        </Link>
+        <div className="flex items-center gap-3">
+          <DeleteButton
+            label={strategy.title}
+            confirmText="Delete strategy?"
+            variant="outline"
+            onDelete={() => deleteStrategy(id)}
+          />
+          <Link href="/strategies" className="text-sm text-primary hover:underline">
+            ← All strategies
+          </Link>
+        </div>
       </div>
 
       {strategy.status === "failed" && (

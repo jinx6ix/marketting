@@ -4,6 +4,8 @@ import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
 import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
 import { PublishNowButton } from "@/features/marketing-items/components/publish-now-button";
+import { DeleteButton } from "@/components/delete-button";
+import { deleteItem } from "@/features/marketing-items/actions";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -90,11 +92,16 @@ export default async function ItemDetailPage({
         {["draft", "failed"].includes(item.status) && (
           <ApprovalBar itemId={id} status={item.status} canApprove={canApprove} />
         )}
-        {(targets ?? []).length > 0 && (
-          <div className="flex items-center justify-end">
-            <PublishNowButton itemId={id} />
-          </div>
-        )}
+        <div className="flex items-center justify-between gap-2">
+          {(targets ?? []).length > 0 && <PublishNowButton itemId={id} />}
+          <DeleteButton
+            label={item.title}
+            confirmText="Delete item?"
+            variant="outline"
+            onDelete={() => deleteItem(id)}
+            className="ml-auto"
+          />
+        </div>
         <Composer
           orgId={orgId!}
           itemId={id}
@@ -136,6 +143,12 @@ export default async function ItemDetailPage({
           {item.status !== "archived" && (
             <PublishNowButton itemId={id} />
           )}
+          <DeleteButton
+            label={item.title}
+            confirmText="Delete item?"
+            variant="outline"
+            onDelete={() => deleteItem(id)}
+          />
           <Link href="/items" className="text-sm text-primary hover:underline">
             ← All items
           </Link>
