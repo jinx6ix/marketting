@@ -65,14 +65,12 @@ export const metaAdapter: SocialProviderAdapter = {
       state,
       scope: [
         "pages_show_list",
-        "pages_read_engagement",
         "pages_manage_posts",
+        "pages_read_engagement",
+        "pages_read_user_content",
         "pages_manage_metadata",
         "business_management",
         "instagram_basic",
-        "instagram_content_publish",
-        "instagram_manage_comments",
-        "instagram_manage_insights",
       ].join(","),
       response_type: "code",
     });
