@@ -11,6 +11,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { DeleteButton } from "@/components/delete-button";
+import { deleteItem } from "@/features/marketing-items/actions";
 import { relativeTime } from "@/lib/utils";
 import type { ItemStatus, ItemType } from "@/types/database";
 
@@ -93,6 +95,7 @@ export default async function ItemsPage({
             <TableHead>Destination</TableHead>
             <TableHead>Campaign</TableHead>
             <TableHead>Scheduled</TableHead>
+            <TableHead className="w-10" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -119,6 +122,12 @@ export default async function ItemsPage({
                 {item.scheduled_at
                   ? new Date(item.scheduled_at).toLocaleString()
                   : relativeTime(item.created_at)}
+              </TableCell>
+              <TableCell>
+                <DeleteButton
+                  label={item.title}
+                  onDelete={deleteItem.bind(null, item.id)}
+                />
               </TableCell>
             </TableRow>
           ))}

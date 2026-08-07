@@ -1,5 +1,7 @@
 "use client";
 
+import React from "react";
+
 /**
  * Best-posting-times heatmap: day-of-week rows × hour columns.
  * Sequential single-hue scale (opacity ramp of --chart-1) so intensity
@@ -34,9 +36,8 @@ export function Heatmap({ cells }: { cells: HeatCell[] }) {
           </div>
         ))}
         {DAYS.map((day, dow) => (
-          <>
+          <React.Fragment key={`row-${dow}`}>
             <div
-              key={`label-${dow}`}
               className="pr-1 text-right text-[10px] leading-4 text-muted-foreground"
             >
               {day}
@@ -53,7 +54,7 @@ export function Heatmap({ cells }: { cells: HeatCell[] }) {
                 />
               );
             })}
-          </>
+          </React.Fragment>
         ))}
       </div>
       <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">

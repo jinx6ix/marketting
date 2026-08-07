@@ -9,6 +9,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { GenerateStrategyButton } from "@/features/strategies/components/strategy-actions";
+import { DeleteButton } from "@/components/delete-button";
+import { deleteStrategy } from "@/features/strategies/actions";
 import { relativeTime } from "@/lib/utils";
 
 export const metadata = { title: "Strategies" };
@@ -51,38 +53,47 @@ export default async function StrategiesPage() {
             ["accepted", "done"].includes(r.status)
           ).length;
           return (
-            <Link key={s.id} href={`/strategies/${s.id}`} className="block">
-              <Card className="transition-colors hover:border-primary/50">
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-base">{s.title}</CardTitle>
-                      <CardDescription>
-                        {KIND_LABELS[s.kind] ?? s.kind} ·{" "}
-                        {relativeTime(s.created_at)}
-                        {s.model && <> · {s.model}</>}
-                      </CardDescription>
+            <div key={s.id} className="relative">
+              <Link href={`/strategies/${s.id}`} className="block">
+                <Card className="transition-colors hover:border-primary/50">
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-base">{s.title}</CardTitle>
+                        <CardDescription>
+                          {KIND_LABELS[s.kind] ?? s.kind} ·{" "}
+                          {relativeTime(s.created_at)}
+                          {s.model && <> · {s.model}</>}
+                        </CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={s.status} />
+                        <DeleteButton
+                          label={s.title}
+                          confirmText="Delete?"
+                          onDelete={deleteStrategy.bind(null, s.id)}
+                        />
+                      </div>
                     </div>
-                    <StatusBadge status={s.status} />
-                  </div>
-                </CardHeader>
-                <CardContent className="text-sm text-muted-foreground">
-                  {s.status === "failed" ? (
-                    <span className="text-destructive">{s.error}</span>
-                  ) : (
-                    <>
-                      {s.summary && <p className="line-clamp-2">{s.summary}</p>}
-                      {recs.length > 0 && (
-                        <p className="mt-2 text-xs">
-                          {recs.length} recommendations · {open} open ·{" "}
-                          {accepted} accepted
-                        </p>
-                      )}
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            </Link>
+                  </CardHeader>
+                  <CardContent className="text-sm text-muted-foreground">
+                    {s.status === "failed" ? (
+                      <span className="text-destructive">{s.error}</span>
+                    ) : (
+                      <>
+                        {s.summary && <p className="line-clamp-2">{s.summary}</p>}
+                        {recs.length > 0 && (
+                          <p className="mt-2 text-xs">
+                            {recs.length} recommendations · {open} open ·{" "}
+                            {accepted} accepted
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </Link>
+            </div>
           );
         })}
         {(strategies ?? []).length === 0 && (
