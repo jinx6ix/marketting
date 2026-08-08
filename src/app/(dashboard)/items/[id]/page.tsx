@@ -145,9 +145,9 @@ export default async function ItemDetailPage({
           )}
           <DeleteButton
             label={item.title}
-            confirmText="Delete item?"
+            confirmText="Delete strategy?"
             variant="outline"
-            onDelete={() => deleteItem(id)}
+            onDelete={deleteItem.bind(null, id)}
           />
           <Link href="/items" className="text-sm text-primary hover:underline">
             ← All items
