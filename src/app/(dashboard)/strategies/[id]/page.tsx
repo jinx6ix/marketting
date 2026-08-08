@@ -75,12 +75,12 @@ export default async function StrategyDetailPage({
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <DeleteButton
-            label={strategy.title}
-            confirmText="Delete strategy?"
-            variant="outline"
-            onDelete={() => deleteStrategy(id)}
-          />
+        <DeleteButton
+  label={strategy.title}
+  confirmText="Delete strategy?"
+  variant="outline"
+  onDelete={deleteStrategy.bind(null, id)}
+/>
           <Link href="/strategies" className="text-sm text-primary hover:underline">
             ← All strategies
           </Link>
