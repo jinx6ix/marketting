@@ -5,7 +5,7 @@ import { Trash2 } from "lucide-react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 
 interface DeleteButtonProps {
-  onDelete: () => Promise<{ error?: string }>;
+  action: () => Promise<{ error?: string }>;
   label?: string;
   confirmText?: string;
   variant?: ButtonProps["variant"];
@@ -14,11 +14,12 @@ interface DeleteButtonProps {
 }
 
 /**
- * Inline two-step delete: first click shows a "Confirm" prompt;
- * second click calls onDelete. Cancels automatically if you click away.
+ * Inline two-step delete:
+ * first click shows a "Confirm" prompt;
+ * second click calls the server action.
  */
 export function DeleteButton({
-  onDelete,
+  action,
   label,
   confirmText = "Sure?",
   variant = "ghost",
@@ -32,6 +33,7 @@ export function DeleteButton({
   function handleFirstClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+
     setError(null);
     setConfirming(true);
   }
@@ -39,16 +41,24 @@ export function DeleteButton({
   function handleCancel(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+
     setConfirming(false);
+    setError(null);
   }
 
   function handleConfirm(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+
+    setError(null);
+
     startTransition(async () => {
-      const result = await onDelete();
+      const result = await action();
+
       if (result?.error) {
         setError(result.error);
+        setConfirming(false);
+      } else {
         setConfirming(false);
       }
     });
@@ -56,8 +66,12 @@ export function DeleteButton({
 
   if (confirming) {
     return (
-      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <span
+        className="inline-flex items-center gap-1"
+        onClick={(e) => e.stopPropagation()}
+      >
         <Button
+          type="button"
           size={size}
           variant="destructive"
           disabled={pending}
@@ -65,24 +79,37 @@ export function DeleteButton({
         >
           {pending ? "Deleting…" : confirmText}
         </Button>
-        <Button size={size} variant="ghost" onClick={handleCancel}>
+
+        <Button
+          type="button"
+          size={size}
+          variant="ghost"
+          disabled={pending}
+          onClick={handleCancel}
+        >
           Cancel
         </Button>
-        {error && <span className="text-xs text-destructive">{error}</span>}
+
+        {error && (
+          <span className="ml-2 text-xs text-destructive">
+            {error}
+          </span>
+        )}
       </span>
     );
   }
 
   return (
     <Button
+      type="button"
       size={size}
       variant={variant}
       className={className}
       onClick={handleFirstClick}
       title={label ? `Delete ${label}` : "Delete"}
     >
-      <Trash2 className="size-3.5" />
-      {label && <span className="sr-only">{label}</span>}
+      <Trash2 className="h-4 w-4" />
+      {label && <span>{label}</span>}
     </Button>
   );
 }
