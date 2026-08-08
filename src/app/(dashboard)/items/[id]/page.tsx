@@ -1,12 +1,10 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ClientDeleteButton } from "@/components/client-delete-button";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
 import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
 import { PublishNowButton } from "@/features/marketing-items/components/publish-now-button";
-import { DeleteButton } from "@/components/delete-button";
-import { deleteItem } from "@/features/marketing-items/actions";
+import { ClientDeleteButton } from "@/components/client-delete-button";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -96,11 +94,11 @@ export default async function ItemDetailPage({
         <div className="flex items-center justify-between gap-2">
           {(targets ?? []).length > 0 && <PublishNowButton itemId={id} />}
           <ClientDeleteButton
+            itemId={id}
             label={item.title}
             confirmText="Delete item?"
             variant="outline"
             className="ml-auto"
-            deleteAction={() => deleteItem(id)}
           />
         </div>
         <Composer
@@ -113,6 +111,7 @@ export default async function ItemDetailPage({
       </div>
     );
   }
+
   // Published/read-only view with per-target results + latest metrics
   const targetIds = (targets ?? []).map((t) => t.id);
   const { data: snapshots } = targetIds.length
@@ -144,11 +143,11 @@ export default async function ItemDetailPage({
           {item.status !== "archived" && (
             <PublishNowButton itemId={id} />
           )}
-          <DeleteButton
+          <ClientDeleteButton
+            itemId={id}
             label={item.title}
             confirmText="Delete strategy?"
             variant="outline"
-            onDelete={deleteItem.bind(null, id)}
           />
           <Link href="/items" className="text-sm text-primary hover:underline">
             ← All items
@@ -181,75 +180,75 @@ export default async function ItemDetailPage({
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Platform</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Likes</TableHead>
-                <TableHead>Comments</TableHead>
-                <TableHead>Impressions</TableHead>
-                <TableHead>Link</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(targets ?? []).map((t) => {
-                const m = latestByTarget.get(t.id);
-                const account = t.social_accounts as {
-                  handle: string | null;
-                  display_name: string | null;
-                } | null;
-                const retryable =
-                  t.status === "failed" || t.status === "skipped";
-                return (
-                  <TableRow key={t.id}>
-                    <TableCell>{PLATFORM_LABELS[t.platform as Platform]}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {account?.handle ?? account?.display_name ?? "—"}
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={t.status} />
-                      {t.error && (
-                        <div className="mt-1 max-w-52 truncate text-xs text-destructive" title={t.error}>
-                          {t.error}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>{formatNumber(m?.likes)}</TableCell>
-                    <TableCell>{formatNumber(m?.comments)}</TableCell>
-                    <TableCell>{formatNumber(m?.impressions)}</TableCell>
-                    <TableCell>
-                      {t.external_url ? (
-                        <a
-                          href={t.external_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-primary hover:underline"
-                        >
-                          View
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {retryable ? (
-                        <PublishNowButton
-                          itemId={id}
-                          label="Retry"
-                          icon="retry"
-                          variant="outline"
-                        />
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Platform</TableHead>
+                  <TableHead>Account</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Likes</TableHead>
+                  <TableHead>Comments</TableHead>
+                  <TableHead>Impressions</TableHead>
+                  <TableHead>Link</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(targets ?? []).map((t) => {
+                  const m = latestByTarget.get(t.id);
+                  const account = t.social_accounts as {
+                    handle: string | null;
+                    display_name: string | null;
+                  } | null;
+                  const retryable =
+                    t.status === "failed" || t.status === "skipped";
+                  return (
+                    <TableRow key={t.id}>
+                      <TableCell>{PLATFORM_LABELS[t.platform as Platform]}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {account?.handle ?? account?.display_name ?? "—"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={t.status} />
+                        {t.error && (
+                          <div className="mt-1 max-w-52 truncate text-xs text-destructive" title={t.error}>
+                            {t.error}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>{formatNumber(m?.likes)}</TableCell>
+                      <TableCell>{formatNumber(m?.comments)}</TableCell>
+                      <TableCell>{formatNumber(m?.impressions)}</TableCell>
+                      <TableCell>
+                        {t.external_url ? (
+                          <a
+                            href={t.external_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            View
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {retryable ? (
+                          <PublishNowButton
+                            itemId={id}
+                            label="Retry"
+                            icon="retry"
+                            variant="outline"
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </div>
         </CardContent>
       </Card>

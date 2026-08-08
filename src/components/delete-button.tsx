@@ -11,6 +11,7 @@ interface DeleteButtonProps {
   variant?: ButtonProps["variant"];
   size?: ButtonProps["size"];
   className?: string;
+  disabled?: boolean;
 }
 
 /**
@@ -24,6 +25,7 @@ export function DeleteButton({
   variant = "ghost",
   size = "sm",
   className,
+  disabled = false,
 }: DeleteButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -60,12 +62,12 @@ export function DeleteButton({
         <Button
           size={size}
           variant="destructive"
-          disabled={pending}
+          disabled={pending || disabled}
           onClick={handleConfirm}
         >
           {pending ? "Deleting…" : confirmText}
         </Button>
-        <Button size={size} variant="ghost" onClick={handleCancel}>
+        <Button size={size} variant="ghost" onClick={handleCancel} disabled={disabled}>
           Cancel
         </Button>
         {error && <span className="text-xs text-destructive">{error}</span>}
@@ -79,6 +81,7 @@ export function DeleteButton({
       variant={variant}
       className={className}
       onClick={handleFirstClick}
+      disabled={disabled}
       title={label ? `Delete ${label}` : "Delete"}
     >
       <Trash2 className="size-3.5" />
