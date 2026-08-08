@@ -52,32 +52,46 @@ export const tiktokAdapter: SocialProviderAdapter = {
   },
 
   getAuthUrl(state, codeChallenge) {
+    const clientKey = process.env.TIKTOK_CLIENT_KEY;
+  
+    if (!clientKey) {
+      throw new Error("TIKTOK_CLIENT_KEY is missing");
+    }
+  
     const params = new URLSearchParams({
-      client_key: process.env.TIKTOK_CLIENT_KEY!,
+      client_key: clientKey,
       response_type: "code",
-      scope: "user.info.basic,user.info.stats,video.list,video.publish,video.upload",
+      scope: "user.info.basic",
       redirect_uri: redirectUri("tiktok"),
       state,
       code_challenge: codeChallenge!,
       code_challenge_method: "S256",
     });
-    return `https://www.tiktok.com/v2/auth/authorize/?${params}`;
+  
+    return `https://www.tiktok.com/v2/auth/authorize?${params.toString()}`;
   },
-
   async exchangeCode(code, codeVerifier) {
-    const res = await socialFetch("tiktok", `${API}/oauth/token/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: formBody({
-        client_key: process.env.TIKTOK_CLIENT_KEY!,
-        client_secret: process.env.TIKTOK_CLIENT_SECRET!,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: redirectUri("tiktok"),
-        code_verifier: codeVerifier!,
-      }),
-    });
+    const res = await socialFetch(
+      "tiktok",
+      `${API}/oauth/token/`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: formBody({
+          client_key: process.env.TIKTOK_CLIENT_KEY!,
+          client_secret: process.env.TIKTOK_CLIENT_SECRET!,
+          code,
+          grant_type: "authorization_code",
+          redirect_uri: redirectUri("tiktok"),
+          code_verifier: codeVerifier!,
+        }),
+      }
+    );
+  
     const data = tokenResponse.parse(await res.json());
+  
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
