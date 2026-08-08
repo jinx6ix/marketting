@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { ClientDeleteButton } from "@/components/client-delete-button";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
 import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
@@ -94,12 +95,12 @@ export default async function ItemDetailPage({
         )}
         <div className="flex items-center justify-between gap-2">
           {(targets ?? []).length > 0 && <PublishNowButton itemId={id} />}
-          <DeleteButton
+          <ClientDeleteButton
             label={item.title}
             confirmText="Delete item?"
             variant="outline"
-            onDelete={() => deleteItem(id)}
             className="ml-auto"
+            deleteAction={() => deleteItem(id)}
           />
         </div>
         <Composer
