@@ -98,7 +98,7 @@ export default async function ItemDetailPage({
             label={item.title}
             confirmText="Delete item?"
             variant="outline"
-            action={() => deleteItem(id)}
+            onDelete={() => deleteItem(id)}
             className="ml-auto"
           />
         </div>
@@ -147,7 +147,7 @@ export default async function ItemDetailPage({
             label={item.title}
             confirmText="Delete strategy?"
             variant="outline"
-            action={deleteItem.bind(null, id)}
+            onDelete={deleteItem.bind(null, id)}
           />
           <Link href="/items" className="text-sm text-primary hover:underline">
             ← All items

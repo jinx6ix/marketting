@@ -79,7 +79,7 @@ export default async function StrategyDetailPage({
           label={strategy.title}
           confirmText="Delete strategy?"
           variant="outline"
-          action={deleteStrategy.bind(null, id)}
+          onDelete={deleteStrategy.bind(null, id)}
         />
           <Link href="/strategies" className="text-sm text-primary hover:underline">
             ← All strategies
