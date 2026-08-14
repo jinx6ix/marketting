@@ -17,6 +17,13 @@ import type { Json } from "@/types/database";
  * Gap analysis: deterministic SQL/TS first, LLM second.
  * Builds an input_snapshot comparing the org against tracked competitors,
  * then asks the strategist model for prioritized recommendations.
+ *
+ * Perf note: every sub-section below fans its DB/AI calls out with
+ * Promise.all instead of awaiting one-at-a-time in a for-loop. With
+ * sequential awaits, an org with a few hundred published posts / several
+ * competitor accounts / a handful of unanalyzed images could take minutes
+ * of pure round-trip latency even when every individual call is fast —
+ * which is what was making "Generate strategy" look stuck on `running`.
  */
 
 export interface GapSnapshot {
@@ -67,53 +74,82 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
         .gte("created_at", new Date(Date.now() - 30 * 86400_000).toISOString()),
     ]);
 
-  // Own follower growth (30d) per platform
+  // Own follower growth (30d) per platform — one query per account, run
+  // concurrently instead of sequentially.
+  const growthPerAccount = await Promise.all(
+    (accounts ?? []).map(async (acc) => {
+      const { data: snaps } = await admin
+        .from("account_metric_snapshots")
+        .select("followers, captured_at")
+        .eq("social_account_id", acc.id)
+        .gte("captured_at", new Date(Date.now() - 30 * 86400_000).toISOString())
+        .order("captured_at", { ascending: true });
+      if (snaps && snaps.length >= 2) {
+        const first = snaps[0].followers ?? 0;
+        const last = snaps[snaps.length - 1].followers ?? 0;
+        return { platform: acc.platform, delta: last - first };
+      }
+      return null;
+    })
+  );
   const followerGrowth30d: Record<string, number> = {};
-  for (const acc of accounts ?? []) {
-    const { data: snaps } = await admin
-      .from("account_metric_snapshots")
-      .select("followers, captured_at")
-      .eq("social_account_id", acc.id)
-      .gte("captured_at", new Date(Date.now() - 30 * 86400_000).toISOString())
-      .order("captured_at", { ascending: true });
-    if (snaps && snaps.length >= 2) {
-      const first = snaps[0].followers ?? 0;
-      const last = snaps[snaps.length - 1].followers ?? 0;
-      followerGrowth30d[acc.platform] =
-        (followerGrowth30d[acc.platform] ?? 0) + (last - first);
-    }
+  for (const g of growthPerAccount) {
+    if (!g) continue;
+    followerGrowth30d[g.platform] = (followerGrowth30d[g.platform] ?? 0) + g.delta;
   }
 
-  // Own engagement by media type (from published targets + latest snapshots)
+  // Own engagement by media type (from published targets + latest snapshots).
+  // Bounded to the 200 most recently published targets, and batch-fetches
+  // snapshots + item media in two queries total instead of two round trips
+  // PER target (previously up to ~400 sequential queries for a busy org).
   const { data: targets } = await admin
     .from("post_targets")
     .select("id, item_id, published_at")
     .eq("org_id", orgId)
     .eq("status", "published")
-    .gte("published_at", new Date(Date.now() - 90 * 86400_000).toISOString());
+    .gte("published_at", new Date(Date.now() - 90 * 86400_000).toISOString())
+    .order("published_at", { ascending: false })
+    .limit(200);
 
   const avgEngagementByMediaType: Record<string, { total: number; n: number }> = {};
-  for (const t of targets ?? []) {
-    const { data: snap } = await admin
-      .from("post_metric_snapshots")
-      .select("likes, comments, shares")
-      .eq("post_target_id", t.id)
-      .order("captured_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (!snap) continue;
-    const { data: item } = await admin
-      .from("marketing_items")
-      .select("media")
-      .eq("id", t.item_id)
-      .single();
-    const media = (item?.media ?? []) as { type?: string }[];
-    const type =
-      media.length === 0 ? "text" : media.some((m) => m.type === "video") ? "video" : "image";
-    const eng = (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0);
-    avgEngagementByMediaType[type] ??= { total: 0, n: 0 };
-    avgEngagementByMediaType[type].total += eng;
-    avgEngagementByMediaType[type].n += 1;
+  if (targets && targets.length > 0) {
+    const targetIds = targets.map((t) => t.id);
+    const itemIds = [...new Set(targets.map((t) => t.item_id))];
+
+    const [{ data: snaps }, { data: mediaItems }] = await Promise.all([
+      admin
+        .from("post_metric_snapshots")
+        .select("post_target_id, likes, comments, shares, captured_at")
+        .in("post_target_id", targetIds)
+        .order("captured_at", { ascending: false }),
+      admin.from("marketing_items").select("id, media").in("id", itemIds),
+    ]);
+
+    // Keep only the latest snapshot per target (rows arrive newest-first).
+    const latestSnapByTarget = new Map<
+      string,
+      { likes: number | null; comments: number | null; shares: number | null }
+    >();
+    for (const s of snaps ?? []) {
+      if (!latestSnapByTarget.has(s.post_target_id)) {
+        latestSnapByTarget.set(s.post_target_id, s);
+      }
+    }
+    const mediaByItem = new Map(
+      (mediaItems ?? []).map((mi) => [mi.id, (mi.media ?? []) as { type?: string }[]])
+    );
+
+    for (const t of targets) {
+      const snap = latestSnapByTarget.get(t.id);
+      if (!snap) continue;
+      const media = mediaByItem.get(t.item_id) ?? [];
+      const type =
+        media.length === 0 ? "text" : media.some((m) => m.type === "video") ? "video" : "image";
+      const eng = (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0);
+      avgEngagementByMediaType[type] ??= { total: 0, n: 0 };
+      avgEngagementByMediaType[type].total += eng;
+      avgEngagementByMediaType[type].n += 1;
+    }
   }
 
   // Best posting hours from the view
@@ -140,38 +176,43 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
     .eq("org_id", orgId)
     .eq("active", true);
 
-  const competitorSummaries: GapSnapshot["competitors"] = [];
+  const competitorPairs = (comps ?? []).flatMap((comp) =>
+    ((comp.competitor_accounts ?? []) as { id: string; platform: string; handle: string }[]).map(
+      (ca) => ({ comp, ca })
+    )
+  );
+
   const allCompDestinations = new Map<string, { posts: number; totalEng: number }>();
   const allCompHashtags = new Set<string>();
 
-  for (const comp of comps ?? []) {
-    for (const ca of (comp.competitor_accounts ?? []) as {
-      id: string;
-      platform: string;
-      handle: string;
-    }[]) {
-      const { data: snaps } = await admin
-        .from("competitor_snapshots")
-        .select("followers, avg_engagement, posting_frequency, captured_at")
-        .eq("competitor_account_id", ca.id)
-        .order("captured_at", { ascending: false })
-        .limit(60);
+  // One (comp, account) pair per competitor social account — run all of
+  // them concurrently instead of one account at a time.
+  const competitorResults = await Promise.all(
+    competitorPairs.map(async ({ comp, ca }) => {
+      const [{ data: snaps }, { data: posts }] = await Promise.all([
+        admin
+          .from("competitor_snapshots")
+          .select("followers, avg_engagement, posting_frequency, captured_at")
+          .eq("competitor_account_id", ca.id)
+          .order("captured_at", { ascending: false })
+          .limit(60),
+        admin
+          .from("competitor_posts")
+          .select("posted_at, media_type, likes, comments, shares, hashtags, destinations")
+          .eq("competitor_account_id", ca.id)
+          .order("posted_at", { ascending: false })
+          .limit(50),
+      ]);
 
       const latest = snaps?.[0];
       const monthAgo = snaps?.find(
         (s) => new Date(s.captured_at) <= new Date(Date.now() - 28 * 86400_000)
       );
 
-      const { data: posts } = await admin
-        .from("competitor_posts")
-        .select("posted_at, media_type, likes, comments, shares, hashtags, destinations")
-        .eq("competitor_account_id", ca.id)
-        .order("posted_at", { ascending: false })
-        .limit(50);
-
       const engagementByMediaType: Record<string, { total: number; n: number }> = {};
       const hourHistogram: Record<string, number> = {};
       const destStats = new Map<string, { posts: number; totalEng: number }>();
+      const hashtags = new Set<string>();
 
       for (const p of posts ?? []) {
         const eng = (p.likes ?? 0) + (p.comments ?? 0) + (p.shares ?? 0);
@@ -190,15 +231,11 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
           s.posts += 1;
           s.totalEng += eng;
           destStats.set(d, s);
-          const g = allCompDestinations.get(d) ?? { posts: 0, totalEng: 0 };
-          g.posts += 1;
-          g.totalEng += eng;
-          allCompDestinations.set(d, g);
         }
-        for (const h of p.hashtags ?? []) allCompHashtags.add(h);
+        for (const h of p.hashtags ?? []) hashtags.add(h);
       }
 
-      competitorSummaries.push({
+      return {
         name: comp.name,
         platform: ca.platform,
         followers: latest?.followers ?? null,
@@ -219,10 +256,32 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
           .sort((a, b) => b.avgEngagement - a.avgEngagement)
           .slice(0, 5),
         postingHourHistogram: hourHistogram,
-        topHashtags: [...allCompHashtags].slice(0, 15),
-      });
+        destStats,
+        hashtags,
+      };
+    })
+  );
+
+  // Merge per-account destination/hashtag stats into the global maps now
+  // that every account has finished (sequential merge, but purely in-memory
+  // so it's effectively instant regardless of how many accounts there are).
+  for (const r of competitorResults) {
+    for (const [d, s] of r.destStats) {
+      const g = allCompDestinations.get(d) ?? { posts: 0, totalEng: 0 };
+      g.posts += s.posts;
+      g.totalEng += s.totalEng;
+      allCompDestinations.set(d, g);
     }
+    for (const h of r.hashtags) allCompHashtags.add(h);
   }
+
+  const topHashtagsOverall = [...allCompHashtags].slice(0, 15);
+  const competitorSummaries: GapSnapshot["competitors"] = competitorResults.map(
+    ({ destStats: _destStats, hashtags: _hashtags, ...summary }) => ({
+      ...summary,
+      topHashtags: topHashtagsOverall,
+    })
+  );
 
   // ── Computed gaps (deterministic) ──────────────────────────────────
   const ownDestSet = new Set(ownDestinations.map((d) => d.toLowerCase()));
@@ -248,31 +307,42 @@ export async function buildGapSnapshot(orgId: string): Promise<GapSnapshot> {
     .slice(0, 12);
 
   // ── Vision insights on our own recent media ────────────────────────
-  const recentMediaInsights: GapSnapshot["org"]["recentMediaInsights"] = [];
-  const { data: mediaItems } = await admin
+  // Up to 5 images need a fresh (real, network-bound) vision-model call;
+  // run those 5 concurrently instead of one after another.
+  const { data: mediaItemsForVision } = await admin
     .from("marketing_items")
     .select("id, title, media, media_insights")
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
     .limit(15);
 
-  let analyzed = 0;
-  for (const mi of mediaItems ?? []) {
-    const media = (mi.media ?? []) as unknown[];
-    if (media.length === 0) continue;
-    let insights = mi.media_insights as unknown as ItemMediaInsights | null;
-    if (!insights && analyzed < 5) {
-      analyzed++;
+  const withMedia = (mediaItemsForVision ?? []).filter(
+    (mi) => ((mi.media ?? []) as unknown[]).length > 0
+  );
+  const alreadyInsighted = withMedia.filter((mi) => mi.media_insights);
+  const needsAnalysis = withMedia.filter((mi) => !mi.media_insights).slice(0, 5);
+
+  const freshlyAnalyzed = await Promise.all(
+    needsAnalysis.map(async (mi) => {
       try {
-        insights = await analyzeItemMedia(mi.id);
+        const insights = await analyzeItemMedia(mi.id);
+        return { title: mi.title, insights };
       } catch {
         // vision failures must not block strategy generation
+        return null;
       }
-    }
-    if (insights) {
-      recentMediaInsights.push({ title: mi.title, insights });
-    }
-  }
+    })
+  );
+
+  const recentMediaInsights: GapSnapshot["org"]["recentMediaInsights"] = [
+    ...alreadyInsighted.map((mi) => ({
+      title: mi.title,
+      insights: mi.media_insights as unknown as ItemMediaInsights,
+    })),
+    ...freshlyAnalyzed.filter(
+      (r): r is { title: string; insights: ItemMediaInsights } => r !== null
+    ),
+  ];
 
   return {
     org: {
