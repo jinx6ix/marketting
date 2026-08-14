@@ -71,6 +71,9 @@ export const metaAdapter: SocialProviderAdapter = {
         "pages_manage_metadata",
         "business_management",
         "instagram_basic",
+        "instagram_content_publish",
+        "instagram_manage_comments",
+        "instagram_manage_insights",
       ].join(","),
       response_type: "code",
     });
