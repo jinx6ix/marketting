@@ -14,10 +14,25 @@ export interface AiCallResult {
   model: string;
 }
 
+/**
+ * Per-request timeout for provider calls. The OpenAI SDK's own default is
+ * 10 minutes — far too long here: a single hung/slow provider would block
+ * the whole chain (chat + repair retry + up to 5 sequential vision calls)
+ * well past the stale-strategy reaper's 10-minute window, which is exactly
+ * why generation runs were getting silently reaped instead of failing over
+ * to the next provider. Keep this short so a bad provider fails fast and
+ * the chain actually falls over to the next one.
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS ?? 20_000);
+
 function clientFor(cfg: AiProviderConfig): OpenAI {
   return new OpenAI({
     baseURL: cfg.baseURL,
     apiKey: process.env[cfg.apiKeyEnv]!,
+    timeout: REQUEST_TIMEOUT_MS,
+    // We already walk our own provider chain on failure; let the SDK fail
+    // fast once instead of silently retrying internally on top of that.
+    maxRetries: 1,
   });
 }
 
