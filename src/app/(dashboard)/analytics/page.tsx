@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { getSessionContext } from "@/lib/supabase/server";
 import { StatTile } from "@/components/charts/stat-tile";
 import { LineSeries, type SeriesDef } from "@/components/charts/line-series";
@@ -42,7 +43,7 @@ export default async function AnalyticsPage() {
   ] = await Promise.all([
     supabase
       .from("social_accounts")
-      .select("id, platform, handle, display_name")
+      .select("id, platform, handle, display_name, avatar_url")
       .eq("org_id", orgId!),
     supabase.from("v_account_latest_metrics").select("*").eq("org_id", orgId!),
     supabase
@@ -61,13 +62,13 @@ export default async function AnalyticsPage() {
       .eq("status", "published")
       .order("published_at", { ascending: false })
       .limit(50),
-    // Full (uncapped) 30-day published set, used for the per-platform
-    // breakdown/comparison below — the `targets` query above is capped to
-    // 50 rows for the "Top posts" table and isn't representative once an
-    // org has more than 50 posts across all platforms combined.
+    // Full (uncapped) 30-day published set, used for the per-account
+    // breakdown below — the `targets` query above is capped to 50 rows for
+    // the "Top posts" table and isn't representative once an org has more
+    // than 50 posts across all accounts combined.
     supabase
       .from("post_targets")
-      .select("id, platform")
+      .select("id, platform, social_account_id")
       .eq("org_id", orgId!)
       .eq("status", "published")
       .gte("published_at", sinceIso),
@@ -87,7 +88,7 @@ export default async function AnalyticsPage() {
     0
   );
 
-  // ── Follower growth per platform ──
+  // ── Follower growth per platform (chart) ──
   const dayPlatform = new Map<string, Record<string, number>>();
   const platformsSeen = new Set<Platform>();
   for (const row of growth ?? []) {
@@ -106,15 +107,20 @@ export default async function AnalyticsPage() {
     label: PLATFORM_LABELS[p],
     color: PLATFORM_COLORS[p],
   }));
-  // 30d growth per platform = last bucketed day's value minus the first's
-  // (both are already summed across every account on that platform).
-  const growth30dByPlatform = new Map<Platform, number>();
-  if (growthRows.length >= 2) {
-    const [, firstBuckets] = growthRows[0];
-    const [, lastBuckets] = growthRows[growthRows.length - 1];
-    for (const p of platformsSeen) {
-      growth30dByPlatform.set(p, (lastBuckets[p] ?? 0) - (firstBuckets[p] ?? 0));
-    }
+
+  // ── Per-account 30d follower growth (first vs. last day in window) ──
+  const growthByAccount = new Map<string, { day: string; followers: number }[]>();
+  for (const row of growth ?? []) {
+    if (row.followers == null) continue;
+    const arr = growthByAccount.get(row.social_account_id) ?? [];
+    arr.push({ day: String(row.day), followers: row.followers });
+    growthByAccount.set(row.social_account_id, arr);
+  }
+  for (const arr of growthByAccount.values()) arr.sort((a, b) => a.day.localeCompare(b.day));
+  function accountGrowth30d(accountId: string): number | null {
+    const arr = growthByAccount.get(accountId);
+    if (!arr || arr.length < 2) return null;
+    return arr[arr.length - 1].followers - arr[0].followers;
   }
 
   // ── Best posting times heatmap (all platforms combined) ──
@@ -168,11 +174,10 @@ export default async function AnalyticsPage() {
     )
     .slice(0, 10);
 
-  // ── Per-platform breakdown + comparison (last 30 days) ──
+  // ── Per-account breakdown (last 30 days) — single source of truth that
+  // the platform comparison table below is then rolled up from, so the two
+  // views can never silently disagree. ──
   const recentIds = (recentTargets ?? []).map((t) => t.id);
-  const platformByTargetId = new Map(
-    (recentTargets ?? []).map((t) => [t.id, t.platform as Platform])
-  );
   const { data: recentSnaps } = recentIds.length
     ? await supabase
         .from("post_metric_snapshots")
@@ -186,9 +191,34 @@ export default async function AnalyticsPage() {
     if (!latestRecentSnap.has(s.post_target_id)) latestRecentSnap.set(s.post_target_id, s);
   }
 
-  interface PlatformStat {
+  const postsByAccount = new Map<string, number>();
+  const engagementSumByAccount = new Map<string, number>();
+  const engagementRateSumByAccount = new Map<string, { sum: number; n: number }>();
+  for (const t of recentTargets ?? []) {
+    postsByAccount.set(t.social_account_id, (postsByAccount.get(t.social_account_id) ?? 0) + 1);
+    const snap = latestRecentSnap.get(t.id);
+    if (!snap) continue;
+    const eng = (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0);
+    engagementSumByAccount.set(
+      t.social_account_id,
+      (engagementSumByAccount.get(t.social_account_id) ?? 0) + eng
+    );
+    if (snap.engagement_rate != null) {
+      const acc = engagementRateSumByAccount.get(t.social_account_id) ?? { sum: 0, n: 0 };
+      acc.sum += snap.engagement_rate;
+      acc.n += 1;
+      engagementRateSumByAccount.set(t.social_account_id, acc);
+    }
+  }
+
+  const latestByAccount = new Map((latest ?? []).map((m) => [m.social_account_id, m]));
+
+  interface AccountStat {
+    id: string;
     platform: Platform;
-    accounts: number;
+    handle: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
     followers: number;
     growth30d: number | null;
     posts30d: number;
@@ -198,74 +228,81 @@ export default async function AnalyticsPage() {
     impressions: number;
   }
 
-  const accountsByPlatform = new Map<Platform, number>();
-  for (const a of accounts ?? []) {
-    accountsByPlatform.set(a.platform, (accountsByPlatform.get(a.platform) ?? 0) + 1);
-  }
-  const followersByPlatform = new Map<Platform, number>();
-  const impressionsByPlatform = new Map<Platform, number>();
-  for (const m of latest ?? []) {
-    const account = accountById.get(m.social_account_id);
-    if (!account) continue;
-    followersByPlatform.set(
-      account.platform,
-      (followersByPlatform.get(account.platform) ?? 0) + (m.followers ?? 0)
-    );
-    impressionsByPlatform.set(
-      account.platform,
-      (impressionsByPlatform.get(account.platform) ?? 0) + (m.impressions ?? 0)
-    );
-  }
-
-  const postsByPlatform = new Map<Platform, number>();
-  const engagementSumByPlatform = new Map<Platform, number>();
-  const engagementRateSumByPlatform = new Map<Platform, { sum: number; n: number }>();
-  for (const [targetId, snap] of latestRecentSnap) {
-    const platform = platformByTargetId.get(targetId);
-    if (!platform) continue;
-    postsByPlatform.set(platform, (postsByPlatform.get(platform) ?? 0) + 1);
-    const eng = (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0);
-    engagementSumByPlatform.set(platform, (engagementSumByPlatform.get(platform) ?? 0) + eng);
-    if (snap.engagement_rate != null) {
-      const acc = engagementRateSumByPlatform.get(platform) ?? { sum: 0, n: 0 };
-      acc.sum += snap.engagement_rate;
-      acc.n += 1;
-      engagementRateSumByPlatform.set(platform, acc);
-    }
-  }
-  // Targets published but with no snapshot yet still count toward posts30d.
-  for (const t of recentTargets ?? []) {
-    const platform = t.platform as Platform;
-    if (!latestRecentSnap.has(t.id)) {
-      postsByPlatform.set(platform, (postsByPlatform.get(platform) ?? 0) + 1);
-    }
-  }
-
-  const allPlatforms = new Set<Platform>([
-    ...(accounts ?? []).map((a) => a.platform),
-  ]);
-  const platformStats: PlatformStat[] = [...allPlatforms]
-    .map((platform) => {
-      const posts30d = postsByPlatform.get(platform) ?? 0;
-      const totalEngagement30d = engagementSumByPlatform.get(platform) ?? 0;
-      const rateAcc = engagementRateSumByPlatform.get(platform);
+  const accountStats: AccountStat[] = (accounts ?? [])
+    .map((a) => {
+      const m = latestByAccount.get(a.id);
+      const posts30d = postsByAccount.get(a.id) ?? 0;
+      const totalEngagement30d = engagementSumByAccount.get(a.id) ?? 0;
+      const rateAcc = engagementRateSumByAccount.get(a.id);
       return {
-        platform,
-        accounts: accountsByPlatform.get(platform) ?? 0,
-        followers: followersByPlatform.get(platform) ?? 0,
-        growth30d: growth30dByPlatform.get(platform) ?? null,
+        id: a.id,
+        platform: a.platform,
+        handle: a.handle,
+        displayName: a.display_name,
+        avatarUrl: a.avatar_url,
+        followers: m?.followers ?? 0,
+        growth30d: accountGrowth30d(a.id),
         posts30d,
         totalEngagement30d,
         avgEngagementPerPost: posts30d > 0 ? totalEngagement30d / posts30d : null,
         avgEngagementRate: rateAcc && rateAcc.n > 0 ? rateAcc.sum / rateAcc.n : null,
-        impressions: impressionsByPlatform.get(platform) ?? 0,
+        impressions: m?.impressions ?? 0,
+      };
+    })
+    .sort((a, b) => b.followers - a.followers);
+
+  // Platform-level rollup, aggregated from the per-account figures above
+  // (not recomputed independently) so the comparison table and the account
+  // cards can never disagree.
+  interface PlatformStat {
+    platform: Platform;
+    accounts: number;
+    followers: number;
+    growth30d: number | null;
+    posts30d: number;
+    avgEngagementPerPost: number | null;
+    avgEngagementRate: number | null;
+    impressions: number;
+  }
+  const byPlatformGroup = new Map<Platform, AccountStat[]>();
+  for (const s of accountStats) {
+    const list = byPlatformGroup.get(s.platform) ?? [];
+    list.push(s);
+    byPlatformGroup.set(s.platform, list);
+  }
+  const platformStats: PlatformStat[] = [...byPlatformGroup.entries()]
+    .map(([platform, group]) => {
+      const posts30d = group.reduce((s, a) => s + a.posts30d, 0);
+      const totalEngagement30d = group.reduce((s, a) => s + a.totalEngagement30d, 0);
+      const rateGroup = group.filter((a) => a.avgEngagementRate != null);
+      const growthGroup = group.filter((a) => a.growth30d != null);
+      return {
+        platform,
+        accounts: group.length,
+        followers: group.reduce((s, a) => s + a.followers, 0),
+        growth30d:
+          growthGroup.length > 0
+            ? growthGroup.reduce((s, a) => s + (a.growth30d ?? 0), 0)
+            : null,
+        posts30d,
+        avgEngagementPerPost: posts30d > 0 ? totalEngagement30d / posts30d : null,
+        avgEngagementRate:
+          rateGroup.length > 0
+            ? rateGroup.reduce((s, a) => s + (a.avgEngagementRate ?? 0), 0) / rateGroup.length
+            : null,
+        impressions: group.reduce((s, a) => s + a.impressions, 0),
       };
     })
     .sort((a, b) => b.followers - a.followers);
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Analytics</h1>
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
+        <p className="text-sm text-muted-foreground">
+          Performance across every connected account, last 30 days.
+        </p>
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile label="Followers" value={totalFollowers} />
@@ -308,140 +345,90 @@ export default async function AnalyticsPage() {
         </Card>
       </div>
 
-      {/* Per-platform breakdown */}
-      <div>
-        <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-          Platform breakdown
-        </h2>
-        {platformStats.length > 0 ? (
+      {/* Platform comparison — aggregate rollup of every account below */}
+      {platformStats.length > 1 && (
+        <section>
+          <SectionHeading
+            title="Platform comparison"
+            description="Every connected account on a platform, rolled into one row"
+          />
+          <Card>
+            <CardContent className="pt-6">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Platform</TableHead>
+                    <TableHead className="text-right">Accounts</TableHead>
+                    <TableHead className="text-right">Followers</TableHead>
+                    <TableHead className="text-right">30d growth</TableHead>
+                    <TableHead className="text-right">Posts (30d)</TableHead>
+                    <TableHead className="text-right">Avg engagement/post</TableHead>
+                    <TableHead className="text-right">Engagement rate</TableHead>
+                    <TableHead className="text-right">Impressions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {platformStats.map((s) => (
+                    <TableRow key={s.platform}>
+                      <TableCell className="font-medium">
+                        <span className="inline-flex items-center gap-2">
+                          <PlatformDot platform={s.platform} />
+                          {PLATFORM_LABELS[s.platform]}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {s.accounts}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        {formatNumber(s.followers)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        <GrowthValue value={s.growth30d} />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatNumber(s.posts30d)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {s.avgEngagementPerPost == null
+                          ? "—"
+                          : formatNumber(Math.round(s.avgEngagementPerPost))}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatPercent(s.avgEngagementRate)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatNumber(s.impressions)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
+      {/* Per-account breakdown — every connected account shown individually,
+          e.g. two Instagram accounts get two separate cards. */}
+      <section>
+        <SectionHeading
+          title="Accounts"
+          description="Each connected account individually — sorted by followers"
+        />
+        {accountStats.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {platformStats.map((s) => (
-              <Card key={s.platform}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <span
-                        className="size-2.5 rounded-full"
-                        style={{ background: PLATFORM_COLORS[s.platform] }}
-                      />
-                      {PLATFORM_LABELS[s.platform]}
-                    </CardTitle>
-                    <Badge variant="outline">
-                      {s.accounts} account{s.accounts === 1 ? "" : "s"}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="grid grid-cols-2 gap-y-3 text-sm">
-                  <Metric label="Followers" value={formatNumber(s.followers)} />
-                  <Metric
-                    label="30d growth"
-                    value={
-                      s.growth30d == null
-                        ? "—"
-                        : `${s.growth30d > 0 ? "+" : ""}${formatNumber(s.growth30d)}`
-                    }
-                    tone={
-                      s.growth30d == null
-                        ? undefined
-                        : s.growth30d > 0
-                          ? "positive"
-                          : s.growth30d < 0
-                            ? "negative"
-                            : undefined
-                    }
-                  />
-                  <Metric label="Posts (30d)" value={formatNumber(s.posts30d)} />
-                  <Metric
-                    label="Avg engagement/post"
-                    value={
-                      s.avgEngagementPerPost == null
-                        ? "—"
-                        : formatNumber(Math.round(s.avgEngagementPerPost))
-                    }
-                  />
-                  <Metric
-                    label="Engagement rate"
-                    value={formatPercent(s.avgEngagementRate)}
-                  />
-                  <Metric label="Impressions" value={formatNumber(s.impressions)} />
-                </CardContent>
-              </Card>
+            {accountStats.map((s) => (
+              <AccountCard key={s.id} stat={s} />
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            Connect a social account to see per-platform stats.
-          </p>
+          <Card>
+            <CardContent className="py-10 text-center text-sm text-muted-foreground">
+              Connect a social account to see per-account stats.
+            </CardContent>
+          </Card>
         )}
-      </div>
-
-      {/* Platform comparison table */}
-      {platformStats.length > 1 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Platform comparison</CardTitle>
-            <CardDescription>
-              Side-by-side, last 30 days for posts/engagement figures
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Platform</TableHead>
-                  <TableHead>Accounts</TableHead>
-                  <TableHead>Followers</TableHead>
-                  <TableHead>30d growth</TableHead>
-                  <TableHead>Posts (30d)</TableHead>
-                  <TableHead>Avg engagement/post</TableHead>
-                  <TableHead>Engagement rate</TableHead>
-                  <TableHead>Impressions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {platformStats.map((s) => (
-                  <TableRow key={s.platform}>
-                    <TableCell className="font-medium">
-                      <span className="inline-flex items-center gap-2">
-                        <span
-                          className="size-2.5 rounded-full"
-                          style={{ background: PLATFORM_COLORS[s.platform] }}
-                        />
-                        {PLATFORM_LABELS[s.platform]}
-                      </span>
-                    </TableCell>
-                    <TableCell>{s.accounts}</TableCell>
-                    <TableCell>{formatNumber(s.followers)}</TableCell>
-                    <TableCell
-                      className={
-                        s.growth30d == null
-                          ? "text-muted-foreground"
-                          : s.growth30d > 0
-                            ? "text-success"
-                            : s.growth30d < 0
-                              ? "text-destructive"
-                              : undefined
-                      }
-                    >
-                      {s.growth30d == null
-                        ? "—"
-                        : `${s.growth30d > 0 ? "+" : ""}${formatNumber(s.growth30d)}`}
-                    </TableCell>
-                    <TableCell>{formatNumber(s.posts30d)}</TableCell>
-                    <TableCell>
-                      {s.avgEngagementPerPost == null
-                        ? "—"
-                        : formatNumber(Math.round(s.avgEngagementPerPost))}
-                    </TableCell>
-                    <TableCell>{formatPercent(s.avgEngagementRate)}</TableCell>
-                    <TableCell>{formatNumber(s.impressions)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
+      </section>
 
       <Card>
         <CardHeader>
@@ -540,30 +527,120 @@ export default async function AnalyticsPage() {
   );
 }
 
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-sm font-semibold">{title}</h2>
+      <p className="text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+function PlatformDot({ platform }: { platform: Platform }) {
+  return (
+    <span
+      className="size-2.5 shrink-0 rounded-full ring-2 ring-background"
+      style={{ background: PLATFORM_COLORS[platform] }}
+    />
+  );
+}
+
+function GrowthValue({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (value === 0) return <span className="text-muted-foreground">0</span>;
+  return (
+    <span className={value > 0 ? "text-success" : "text-destructive"}>
+      {value > 0 ? "+" : ""}
+      {formatNumber(value)}
+    </span>
+  );
+}
+
+function AccountCard({
+  stat,
+}: {
+  stat: {
+    id: string;
+    platform: Platform;
+    handle: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+    followers: number;
+    growth30d: number | null;
+    posts30d: number;
+    avgEngagementPerPost: number | null;
+    avgEngagementRate: number | null;
+    impressions: number;
+  };
+}) {
+  const name = stat.displayName ?? stat.handle ?? "Account";
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-3">
+          {stat.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={stat.avatarUrl}
+              alt=""
+              className="size-10 shrink-0 rounded-full ring-1 ring-border"
+            />
+          ) : (
+            <div
+              className="flex size-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white"
+              style={{ background: PLATFORM_COLORS[stat.platform] }}
+            >
+              {name.slice(0, 1).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold leading-tight">{name}</div>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {stat.handle && <span className="truncate">@{stat.handle}</span>}
+            </div>
+          </div>
+          <Badge variant="outline" className="shrink-0 gap-1.5">
+            <PlatformDot platform={stat.platform} />
+            {PLATFORM_LABELS[stat.platform]}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 border-t pt-4 text-sm">
+        <Metric label="Followers" value={formatNumber(stat.followers)} />
+        <Metric label="30d growth" value={<GrowthValue value={stat.growth30d} />} />
+        <Metric label="Posts (30d)" value={formatNumber(stat.posts30d)} />
+        <Metric
+          label="Avg engagement/post"
+          value={
+            stat.avgEngagementPerPost == null
+              ? "—"
+              : formatNumber(Math.round(stat.avgEngagementPerPost))
+          }
+        />
+        <Metric label="Engagement rate" value={formatPercent(stat.avgEngagementRate)} />
+        <Metric label="Impressions" value={formatNumber(stat.impressions)} />
+      </CardContent>
+    </Card>
+  );
+}
+
 function Metric({
   label,
   value,
-  tone,
 }: {
   label: string;
-  value: string;
-  tone?: "positive" | "negative";
+  value: ReactNode;
 }) {
   return (
     <div>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div
-        className={
-          "font-medium tabular-nums " +
-          (tone === "positive"
-            ? "text-success"
-            : tone === "negative"
-              ? "text-destructive"
-              : "")
-        }
-      >
-        {value}
-      </div>
+      <div className="font-medium tabular-nums">{value}</div>
     </div>
   );
 }

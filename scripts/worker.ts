@@ -54,6 +54,7 @@ cron.schedule("*/5 * * * *", () => trigger("stale-publish"));
 cron.schedule("*/5 * * * *", () => trigger("retry-partial"));
 cron.schedule("*/5 * * * *", () => trigger("stale-strategy"));
 cron.schedule("*/10 * * * *", () => trigger("mentions"));
+cron.schedule("*/20 * * * *", () => trigger("stale-job-runs"));
 cron.schedule("*/30 * * * *", () => trigger("metrics"));
 cron.schedule("0 */6 * * *", () => trigger("competitors"));
 cron.schedule("0 3 * * *", () => trigger("token-refresh"));
