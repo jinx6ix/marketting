@@ -70,6 +70,7 @@ export interface Database {
         slug: string;
         timezone: string;
         industry_niche: string[];
+        default_hashtags: string[];
         created_at: string;
       }>;
       org_members: Row<{

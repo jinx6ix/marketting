@@ -8,9 +8,105 @@ import { itemFormSchema, type ItemFormValues } from "./schemas";
 import { publishDue } from "@/lib/jobs/publish";
 import type { Json } from "@/types/database";
 
+/**
+ * YouTube publishing is video-only (see lib/social/providers/youtube.ts).
+ * Catch it here at save time instead of letting it fail at publish time —
+ * "locks" YouTube as a target whenever the item's media is image-only.
+ */
+function validateYoutubeMedia(
+  targets: { platform: string }[],
+  media: { type: "image" | "video" }[]
+): string | null {
+  const hasYoutubeTarget = targets.some((t) => t.platform === "youtube");
+  if (!hasYoutubeTarget) return null;
+  const hasVideo = media.some((m) => m.type === "video");
+  if (!hasVideo) {
+    return "YouTube requires a video — remove YouTube from “Publish to” or add a video (images alone aren't supported).";
+  }
+  return null;
+}
+
 export interface ActionResult {
   error?: string;
   id?: string;
+}
+
+/**
+ * Merge the org's default hashtags (configured under Settings → Organization)
+ * into an item's own hashtags. Item-specific tags keep their order and come
+ * first; any default not already present (case-insensitively) is appended.
+ * Capped at 30 to match itemFormSchema's hashtags limit.
+ */
+async function withDefaultHashtags(
+  supabase: Awaited<ReturnType<typeof getSessionContext>>["supabase"],
+  orgId: string,
+  hashtags: string[]
+): Promise<string[]> {
+  const { data: org } = await supabase
+    .from("organizations")
+    .select("default_hashtags")
+    .eq("id", orgId)
+    .single();
+  const defaults = org?.default_hashtags ?? [];
+  if (defaults.length === 0) return hashtags;
+
+  const seen = new Set(hashtags.map((h) => h.toLowerCase()));
+  const merged = [...hashtags];
+  for (const tag of defaults) {
+    if (!seen.has(tag.toLowerCase())) {
+      seen.add(tag.toLowerCase());
+      merged.push(tag);
+    }
+  }
+  return merged.slice(0, 30);
+}
+
+export interface BackfillResult extends ActionResult {
+  updated?: number;
+}
+
+/**
+ * One-off: apply the org's current default hashtags to every existing item
+ * that's missing one or more of them. Items already containing every
+ * default (case-insensitively) are skipped. Run from Settings →
+ * Organization after changing the default list.
+ */
+export async function backfillDefaultHashtags(): Promise<BackfillResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const { data: org } = await supabase
+    .from("organizations")
+    .select("default_hashtags")
+    .eq("id", orgId)
+    .single();
+  const defaults = org?.default_hashtags ?? [];
+  if (defaults.length === 0) {
+    return { error: "No default hashtags are configured yet." };
+  }
+
+  const { data: items, error } = await supabase
+    .from("marketing_items")
+    .select("id, hashtags")
+    .eq("org_id", orgId);
+  if (error) return { error: friendlyActionError(error) };
+
+  let updated = 0;
+  for (const item of items ?? []) {
+    const seen = new Set((item.hashtags ?? []).map((h) => h.toLowerCase()));
+    const missing = defaults.filter((tag) => !seen.has(tag.toLowerCase()));
+    if (missing.length === 0) continue;
+
+    const merged = [...(item.hashtags ?? []), ...missing].slice(0, 30);
+    const { error: updErr } = await supabase
+      .from("marketing_items")
+      .update({ hashtags: merged })
+      .eq("id", item.id);
+    if (!updErr) updated++;
+  }
+
+  revalidatePath("/items");
+  return { updated };
 }
 
 export async function createItem(values: ItemFormValues): Promise<ActionResult> {
@@ -21,7 +117,11 @@ export async function createItem(values: ItemFormValues): Promise<ActionResult> 
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const v = parsed.data;
 
+  const youtubeError = validateYoutubeMedia(v.targets, v.media);
+  if (youtubeError) return { error: youtubeError };
+
   const status = v.scheduled_at ? "scheduled" : "draft";
+  const hashtags = await withDefaultHashtags(supabase, orgId, v.hashtags);
 
   const { data: item, error } = await supabase
     .from("marketing_items")
@@ -33,7 +133,7 @@ export async function createItem(values: ItemFormValues): Promise<ActionResult> 
       body: v.body,
       media: v.media as unknown as Json,
       promo: (v.promo ?? null) as Json,
-      hashtags: v.hashtags,
+      hashtags,
       destination: v.destination || null,
       status,
       scheduled_at: v.scheduled_at ?? null,
@@ -75,6 +175,9 @@ export async function updateItem(
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const v = parsed.data;
 
+  const youtubeError = validateYoutubeMedia(v.targets, v.media);
+  if (youtubeError) return { error: youtubeError };
+
   // Only draft/scheduled/failed items can be edited.
   const { data: existing } = await supabase
     .from("marketing_items")
@@ -87,6 +190,7 @@ export async function updateItem(
   }
 
   const status = v.scheduled_at ? "scheduled" : "draft";
+  const hashtags = await withDefaultHashtags(supabase, orgId, v.hashtags);
 
   const { error } = await supabase
     .from("marketing_items")
@@ -97,7 +201,7 @@ export async function updateItem(
       body: v.body,
       media: v.media as unknown as Json,
       promo: (v.promo ?? null) as Json,
-      hashtags: v.hashtags,
+      hashtags,
       destination: v.destination || null,
       status,
       scheduled_at: v.scheduled_at ?? null,

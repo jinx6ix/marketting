@@ -187,12 +187,23 @@ const orgSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(200),
   timezone: z.string().trim().min(1).max(64),
   industry_niche: z.array(z.string().trim().min(1).max(80)).max(20),
+  default_hashtags: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .transform((h) => (h.startsWith("#") ? h : `#${h}`))
+    )
+    .max(30),
 });
 
 export async function updateOrganization(values: {
   name: string;
   timezone: string;
   industry_niche: string[];
+  default_hashtags: string[];
 }): Promise<ActionResult> {
   const ctx = await requireManagerRole();
   if ("error" in ctx) return { error: ctx.error };

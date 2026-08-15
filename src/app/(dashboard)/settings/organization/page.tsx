@@ -16,7 +16,7 @@ export default async function OrganizationSettingsPage() {
   const [{ data: org }, { data: membership }] = await Promise.all([
     supabase
       .from("organizations")
-      .select("name, timezone, industry_niche")
+      .select("name, timezone, industry_niche, default_hashtags")
       .eq("id", orgId!)
       .single(),
     supabase
@@ -45,6 +45,7 @@ export default async function OrganizationSettingsPage() {
             name: org?.name ?? "",
             timezone: org?.timezone ?? "UTC",
             industry_niche: org?.industry_niche ?? [],
+            default_hashtags: org?.default_hashtags ?? [],
           }}
           readOnly={!canEdit}
         />

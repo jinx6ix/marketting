@@ -169,11 +169,11 @@ export const youtubeAdapter: SocialProviderAdapter = {
     }
     const videoBuf = Buffer.from(await videoRes.arrayBuffer());
 
-    const [title, ...rest] = post.text.split("\n");
+    const [fallbackTitle] = post.text.split("\n");
     const metadata = {
       snippet: {
-        title: (title || "Untitled").slice(0, 100),
-        description: rest.join("\n").slice(0, 5000) || post.text.slice(0, 5000),
+        title: (post.title || fallbackTitle || "Untitled").slice(0, 100),
+        description: post.text.slice(0, 5000),
         categoryId: "19", // Travel & Events
       },
       status: { privacyStatus: "public", selfDeclaredMadeForKids: false },

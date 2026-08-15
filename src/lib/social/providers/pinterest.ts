@@ -162,7 +162,7 @@ export const pinterestAdapter: SocialProviderAdapter = {
       }
     }
 
-    const [title, ...rest] = post.text.split("\n");
+    const [fallbackTitle] = post.text.split("\n");
     const res = await socialFetch("pinterest", `${API}/pins`, {
       method: "POST",
       headers: {
@@ -171,8 +171,8 @@ export const pinterestAdapter: SocialProviderAdapter = {
       },
       body: JSON.stringify({
         board_id: boardId,
-        title: (title || "Pin").slice(0, 100),
-        description: (rest.join("\n") || post.text).slice(0, 500),
+        title: (post.title || fallbackTitle || "Pin").slice(0, 100),
+        description: post.text.slice(0, 500),
         ...(post.link ? { link: post.link } : {}),
         media_source:
           post.mediaType === "video"

@@ -23,6 +23,8 @@ export interface ConnectedProfile {
 
 export interface PublishPayload {
   text: string;
+  /** Distinct title, only used by platforms with a separate title field (YouTube, Pinterest). */
+  title?: string;
   mediaUrls: string[];
   mediaType: "none" | "image" | "video";
   link?: string;

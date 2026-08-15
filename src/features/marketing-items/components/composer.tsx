@@ -111,12 +111,34 @@ export function Composer({
 
   const [uploading, setUploading] = useState(false);
 
+  const hasVideo = media.some((m) => m.type === "video");
+  const youtubeAccountIds = useMemo(
+    () => new Set(accounts.filter((a) => a.platform === "youtube").map((a) => a.id)),
+    [accounts]
+  );
+
+  // YouTube is video-only — derive the "actually usable" selection instead
+  // of syncing selectedAccounts via an effect: if the item's media has no
+  // video, any selected YouTube account is excluded here rather than
+  // mutated out of state. selectedAccounts still holds the user's raw
+  // clicks (so re-adding a video brings the prior selection right back);
+  // every read below uses activeAccounts.
+  const activeAccounts = useMemo(() => {
+    if (hasVideo || youtubeAccountIds.size === 0) return selectedAccounts;
+    let changed = false;
+    const next = new Set(selectedAccounts);
+    for (const id of youtubeAccountIds) {
+      if (next.delete(id)) changed = true;
+    }
+    return changed ? next : selectedAccounts;
+  }, [selectedAccounts, hasVideo, youtubeAccountIds]);
+
   const selectedPlatforms = useMemo(
     () =>
-      [...selectedAccounts]
+      [...activeAccounts]
         .map((id) => accounts.find((a) => a.id === id)?.platform)
         .filter((p): p is Platform => !!p),
-    [selectedAccounts, accounts]
+    [activeAccounts, accounts]
   );
 
   const mediaWarning =
@@ -231,7 +253,7 @@ export function Composer({
 
   function submit(publish = false) {
     setError(null);
-    if (publish && selectedAccounts.size === 0) {
+    if (publish && activeAccounts.size === 0) {
       setError("Select at least one account under “Publish to” first.");
       return;
     }
@@ -253,7 +275,7 @@ export function Composer({
       scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ai_generated: false,
-      targets: [...selectedAccounts].map((id) => {
+      targets: [...activeAccounts].map((id) => {
         const account = accounts.find((a) => a.id === id)!;
         return {
           social_account_id: id,
@@ -537,7 +559,7 @@ export function Composer({
         </Card>
 
         {/* Per-platform variants */}
-        {selectedAccounts.size > 0 && (
+        {activeAccounts.size > 0 && (
           <Card>
             <CardHeader>
               <CardTitle>Platform variants</CardTitle>
@@ -547,7 +569,7 @@ export function Composer({
             </CardHeader>
             <CardContent>
               <div className="mb-3 flex flex-wrap gap-1">
-                {[...selectedAccounts].map((id) => {
+                {[...activeAccounts].map((id) => {
                   const account = accounts.find((a) => a.id === id);
                   if (!account) return null;
                   return (
@@ -571,6 +593,7 @@ export function Composer({
                 })}
               </div>
               {activeVariantTab &&
+                activeAccounts.has(activeVariantTab) &&
                 (() => {
                   const account = accounts.find((a) => a.id === activeVariantTab);
                   if (!account) return null;
@@ -622,29 +645,48 @@ export function Composer({
                 .
               </p>
             )}
-            {accounts.map((a) => (
-              <label
-                key={a.id}
-                className="flex cursor-pointer items-center gap-2 rounded-md border p-2 text-sm hover:bg-accent"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedAccounts.has(a.id)}
-                  onChange={(e) => {
-                    setSelectedAccounts((prev) => {
-                      const next = new Set(prev);
-                      if (e.target.checked) next.add(a.id);
-                      else next.delete(a.id);
-                      return next;
-                    });
-                  }}
-                />
-                <span className="font-medium">{PLATFORM_LABELS[a.platform]}</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {a.handle ?? a.display_name}
-                </span>
-              </label>
-            ))}
+            {accounts.map((a) => {
+              const locked = a.platform === "youtube" && !hasVideo;
+              return (
+                <label
+                  key={a.id}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md border p-2 text-sm",
+                    locked
+                      ? "cursor-not-allowed opacity-50"
+                      : "cursor-pointer hover:bg-accent"
+                  )}
+                  title={
+                    locked
+                      ? "YouTube only accepts video — add a video to enable this."
+                      : undefined
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={activeAccounts.has(a.id)}
+                    disabled={locked}
+                    onChange={(e) => {
+                      setSelectedAccounts((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(a.id);
+                        else next.delete(a.id);
+                        return next;
+                      });
+                    }}
+                  />
+                  <span className="font-medium">{PLATFORM_LABELS[a.platform]}</span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {a.handle ?? a.display_name}
+                  </span>
+                  {locked && (
+                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                      Video required
+                    </span>
+                  )}
+                </label>
+              );
+            })}
           </CardContent>
         </Card>
 
@@ -688,11 +730,11 @@ export function Composer({
             className="w-full"
             size="lg"
             disabled={
-              pending || !title || uploading || selectedAccounts.size === 0
+              pending || !title || uploading || activeAccounts.size === 0
             }
             onClick={() => submit(true)}
             title={
-              selectedAccounts.size === 0
+              activeAccounts.size === 0
                 ? "Select at least one account under “Publish to”"
                 : undefined
             }

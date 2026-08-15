@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getAdapter } from "@/lib/social/registry";
 import { getAccountTokens } from "@/lib/social/accounts";
 import { SocialApiError, type PublishPayload } from "@/lib/social/types";
+import { formatForPlatform } from "@/lib/social/format";
 import { nextRetryAt, tryAcquire, markRateLimited } from "./rate-limit";
 import { runJob } from "./runner";
 import { rollupItemStatus } from "./item-rollup";
@@ -26,7 +27,7 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
     // Due = parent item scheduled in the past AND target pending, or a retry due.
     const { data: targets, error } = await admin
       .from("post_targets")
-      .select("*, marketing_items!inner(id, status, scheduled_at, body, media, hashtags)")
+      .select("*, marketing_items!inner(id, status, scheduled_at, title, body, media, hashtags)")
       .in("status", ["pending", "queued"])
       .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
       .limit(20);
@@ -90,25 +91,46 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
         const adapter = getAdapter(platform);
 
         const item = target.marketing_items as unknown as {
+          title: string;
           body: string;
           media: MediaEntry[];
           hashtags: string[];
         };
 
-        const mediaUrls = await resolveMediaUrls(
-          (target.variant_media as MediaEntry[] | null) ?? item.media ?? []
-        );
-        const mediaType = pickMediaType(
-          (target.variant_media as MediaEntry[] | null) ?? item.media ?? []
-        );
+        const mediaSource =
+          (target.variant_media as MediaEntry[] | null) ?? item.media ?? [];
+        const mediaType = pickMediaType(mediaSource);
 
-        const text =
-          target.variant_body ??
-          [item.body, item.hashtags?.map((h) => `#${h}`).join(" ")]
-            .filter(Boolean)
-            .join("\n\n");
+        // YouTube publishing is video-only. This is also enforced at
+        // create/update time in features/marketing-items/actions.ts, but
+        // media can change after an item is scheduled (edit, or a variant
+        // override), so check again right before we'd otherwise try to
+        // upload an image as a "video" and get a confusing platform error.
+        if (platform === "youtube" && mediaType !== "video") {
+          throw new SocialApiError(
+            "youtube",
+            "video_required",
+            "YouTube requires a video — this item's media is image-only",
+            false
+          );
+        }
 
-        const payload: PublishPayload = { text, mediaUrls, mediaType };
+        const mediaUrls = await resolveMediaUrls(mediaSource);
+
+        const formatted = target.variant_body
+          ? { text: target.variant_body, title: item.title }
+          : formatForPlatform(platform, {
+              title: item.title,
+              body: item.body,
+              hashtags: item.hashtags ?? [],
+            });
+
+        const payload: PublishPayload = {
+          text: formatted.text,
+          title: formatted.title,
+          mediaUrls,
+          mediaType,
+        };
         const result = await adapter.publish(tokens, account, payload);
         published = true;
 
