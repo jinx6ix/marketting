@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { reapStalePublishes } from "@/lib/jobs/stale-publish";
 import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/supabase/server";
 import { friendlyActionError } from "@/lib/jobs/action-errors";
@@ -381,11 +382,41 @@ export async function publishNow(id: string): Promise<PublishNowResult> {
     .single();
   if (!item) return { error: "Item not found" };
 
-  if (item.status === "publishing" || item.status === "archived") {
-    return { error: `Cannot publish an item with status "${item.status}"` };
+  let status = item.status;
+
+  if (status === "archived") {
+    return { error: `Cannot publish an item with status "${status}"` };
   }
 
-  const isPartial = ["failed", "partially_published"].includes(item.status);
+  if (status === "publishing") {
+    // Don't just refuse — this is exactly the state a crashed/killed
+    // worker leaves things in (see lib/jobs/stale-publish.ts), and it's
+    // usually what someone clicking "Retry" is actually trying to get out
+    // of. Run the same reaper on-demand: if this item's targets have
+    // genuinely been stuck past the 15-minute staleness window, this
+    // clears them to `failed` immediately instead of making the user wait
+    // for the next scheduled sweep. If something is truly still in
+    // flight (younger than 15 min), the item is still `publishing`
+    // afterward and we tell the user clearly instead of the old generic
+    // "cannot publish" message.
+    await reapStalePublishes();
+    const { data: refreshed } = await supabase
+      .from("marketing_items")
+      .select("status")
+      .eq("id", id)
+      .eq("org_id", orgId)
+      .single();
+    status = refreshed?.status ?? status;
+
+    if (status === "publishing") {
+      return {
+        error:
+          "This item is actively publishing right now. If it's been more than 15 minutes, it should clear on its own shortly — try again in a moment.",
+      };
+    }
+  }
+
+  const isPartial = ["failed", "partially_published"].includes(status);
 
   const { data: targets } = await supabase
     .from("post_targets")

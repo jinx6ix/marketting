@@ -414,7 +414,15 @@ async function waitForContainer(
   igId: string,
   creationId: string,
   tokens: TokenSet,
-  maxWaitMs = 60_000
+  // Instagram's Reels processing time scales with video length/size —
+  // 60s (the old value) is only enough for short, small clips. A few
+  // minutes of footage can legitimately take several minutes to finish
+  // processing, which is what was surfacing as `container_timeout`.
+  // 6 minutes leaves headroom inside the publish cron route's 300s budget
+  // for a couple of other quick targets alongside a slow video, while the
+  // stale-publish reaper (15 min) remains the safety net if the whole
+  // route gets killed mid-wait.
+  maxWaitMs = 360_000
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
@@ -435,7 +443,10 @@ async function waitForContainer(
         "Instagram video processing failed"
       );
     }
-    await new Promise((r) => setTimeout(r, 3000));
+    // Poll less aggressively than before (5s vs 3s) since we now wait much
+    // longer overall — keeps the total number of status-check calls
+    // reasonable instead of scaling 6x with the timeout.
+    await new Promise((r) => setTimeout(r, 5000));
   }
   throw new SocialApiError(
     "instagram",

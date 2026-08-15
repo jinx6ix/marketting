@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 import { Sparkles, Wand2, Hash, Upload, X as XIcon, Eye } from "lucide-react";
+import * as tus from "tus-js-client";
 import { createClient } from "@/lib/supabase/client";
 import { createItem, publishNow, updateItem } from "../actions";
 import type { ItemFormValues } from "../schemas";
@@ -110,6 +111,10 @@ export function Composer({
   const [visionInsights, setVisionInsights] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    file: string;
+    pct: number;
+  } | null>(null);
 
   const hasVideo = media.some((m) => m.type === "video");
   const youtubeAccountIds = useMemo(
@@ -224,18 +229,78 @@ export function Composer({
     }
   }
 
+  // Supabase's standard upload() endpoint is a single POST — for large
+  // video files (100-200MB+) that's slow to retry from scratch on any
+  // network blip and prone to just failing outright. Files over the 6MB
+  // TUS chunk size go through Supabase's resumable (TUS) upload endpoint
+  // instead, which uploads in chunks and can resume after a dropped
+  // connection instead of restarting the whole file.
+  const TUS_THRESHOLD_BYTES = 6 * 1024 * 1024;
+
+  async function uploadResumable(
+    file: File,
+    path: string,
+    accessToken: string
+  ): Promise<void> {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!supabaseUrl) throw new Error("Missing Supabase URL configuration");
+
+    await new Promise<void>((resolve, reject) => {
+      const upload = new tus.Upload(file, {
+        endpoint: `${supabaseUrl}/storage/v1/upload/resumable`,
+        retryDelays: [0, 3000, 5000, 10000, 20000],
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "x-upsert": "false",
+        },
+        uploadDataDuringCreation: true,
+        removeFingerprintOnSuccess: true,
+        metadata: {
+          bucketName: "media",
+          objectName: path,
+          contentType: file.type || "application/octet-stream",
+          cacheControl: "3600",
+        },
+        chunkSize: TUS_THRESHOLD_BYTES, // Supabase requires exactly 6MB chunks
+        onError: reject,
+        onProgress: (sent, total) => {
+          setUploadProgress({ file: file.name, pct: Math.round((sent / total) * 100) });
+        },
+        onSuccess: () => resolve(),
+      });
+
+      upload
+        .findPreviousUploads()
+        .then((previous) => {
+          if (previous.length > 0) upload.resumeFromPreviousUpload(previous[0]);
+          upload.start();
+        })
+        .catch(reject);
+    });
+  }
+
   async function uploadFiles(files: FileList) {
     setUploading(true);
     setError(null);
     const supabase = createClient();
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       for (const file of Array.from(files)) {
         const ext = file.name.split(".").pop() ?? "bin";
         const path = `${orgId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-        const { error: upErr } = await supabase.storage
-          .from("media")
-          .upload(path, file, { contentType: file.type });
-        if (upErr) throw new Error(upErr.message);
+
+        if (file.size > TUS_THRESHOLD_BYTES && session?.access_token) {
+          setUploadProgress({ file: file.name, pct: 0 });
+          await uploadResumable(file, path, session.access_token);
+        } else {
+          const { error: upErr } = await supabase.storage
+            .from("media")
+            .upload(path, file, { contentType: file.type });
+          if (upErr) throw new Error(upErr.message);
+        }
+
         setMedia((prev) => [
           ...prev,
           {
@@ -248,6 +313,7 @@ export function Composer({
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   }
 
@@ -540,7 +606,11 @@ export function Composer({
                 ))}
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent">
                   <Upload className="size-3.5" />
-                  {uploading ? "Uploading…" : "Upload image/video"}
+                  {uploadProgress
+                    ? `Uploading ${uploadProgress.file}… ${uploadProgress.pct}%`
+                    : uploading
+                      ? "Uploading…"
+                      : "Upload image/video"}
                   <input
                     type="file"
                     accept="image/*,video/*"
