@@ -247,8 +247,16 @@ export function Composer({
   // limit that has to be manually raised. No code change can bypass that,
   // so any video over this threshold gets compressed client-side first
   // (see lib/video/compress.ts) rather than attempting an upload that's
-  // very likely to 413. 40MB leaves headroom under Free's 50MB hard cap.
+  // very likely to 413.
   const AUTO_COMPRESS_THRESHOLD_BYTES = 40 * 1024 * 1024;
+  // What we ask compressVideo to aim for — comfortably under the 50MB hard
+  // cap, since bitrate-targeted encoding lands close to but not always
+  // exactly at budget.
+  const TARGET_UPLOAD_SIZE_BYTES = 35 * 1024 * 1024;
+  // If the first pass still comes out above this (can happen for very long
+  // videos even at the minimum sane bitrate), run a second, stricter pass
+  // on the already-compressed file instead of giving up.
+  const SAFETY_CEILING_BYTES = 45 * 1024 * 1024;
 
   async function uploadResumable(
     file: File,
@@ -310,8 +318,23 @@ export function Composer({
           setCompressProgress({ file: file.name, pct: 0 });
           try {
             file = await compressVideo(file, {
+              targetSizeBytes: TARGET_UPLOAD_SIZE_BYTES,
               onProgress: (pct) => setCompressProgress({ file: rawFile.name, pct }),
             });
+
+            // Very long videos can still land above budget even at the
+            // encoder's sane minimum bitrate — one stricter pass on the
+            // already-shrunk file, at a lower resolution too, rather than
+            // handing the user a 413 after they thought compression had
+            // already handled it.
+            if (file.size > SAFETY_CEILING_BYTES) {
+              setCompressProgress({ file: rawFile.name, pct: 0 });
+              file = await compressVideo(file, {
+                targetSizeBytes: TARGET_UPLOAD_SIZE_BYTES * 0.6,
+                maxWidth: 854,
+                onProgress: (pct) => setCompressProgress({ file: rawFile.name, pct }),
+              });
+            }
           } catch {
             // If compression itself fails (unsupported codec, browser
             // memory limits, etc.), fall back to attempting the original

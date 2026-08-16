@@ -1,20 +1,53 @@
 "use client";
 
 export interface CompressOptions {
+  /**
+   * Aim to land the whole output file under this many bytes. This is the
+   * primary control — bitrate is computed from it and the video's actual
+   * duration, so output size stays predictable regardless of how long or
+   * high-motion the source video is (CRF-only encoding doesn't guarantee
+   * this: a long/high-motion video can land well above budget even at an
+   * aggressive CRF, which is what let a "compressed" file still 413).
+   */
+  targetSizeBytes?: number;
   /** Cap the longest video dimension at this many pixels. Default 1280 (~720p). */
   maxWidth?: number;
-  /** libx264 CRF — higher = smaller file, lower quality. 23 is "visually fine", 28 is aggressive. */
-  crf?: number;
   onProgress?: (pct: number) => void;
 }
 
+const AUDIO_BITRATE_KBPS = 96;
+const MIN_VIDEO_BITRATE_KBPS = 250; // floor so very long videos don't end up unwatchable
+const FALLBACK_VIDEO_BITRATE_KBPS = 1500; // used only if duration can't be read
+
+/** Reads video duration via a throwaway <video> element — reliable in-browser, no ffmpeg needed. */
+function getVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(video.src);
+      resolve(video.duration);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(video.src);
+      reject(new Error("Could not read video duration"));
+    };
+    video.src = URL.createObjectURL(file);
+  });
+}
+
 /**
- * Re-encodes a video client-side (H.264/AAC, scaled down) using ffmpeg.wasm,
- * to shrink it before upload — Supabase enforces a hard project-wide upload
- * size cap (50MB on the Free plan, and even Pro defaults to a limit that has
- * to be manually raised) that no amount of server-side code can bypass, so
- * for large videos the only way to make an upload actually succeed is to
- * make the file smaller first.
+ * Re-encodes a video client-side (H.264/AAC, scaled down, bitrate-targeted)
+ * using ffmpeg.wasm, to shrink it before upload — Supabase enforces a hard
+ * project-wide upload size cap (50MB on the Free plan, and even Pro
+ * defaults to a limit that has to be manually raised) that no amount of
+ * server-side code can bypass, so for large videos the only way to make an
+ * upload actually succeed is to make the file smaller first.
+ *
+ * Bitrate is computed from targetSizeBytes and the source video's actual
+ * duration (read via a <video> element, not ffprobe) rather than relying on
+ * CRF alone, so the output size is predictable up front instead of varying
+ * with content complexity.
  *
  * Uses the single-thread ffmpeg.wasm core (@ffmpeg/core, not @ffmpeg/core-mt)
  * deliberately: the multi-thread core needs SharedArrayBuffer, which needs
@@ -27,8 +60,21 @@ export interface CompressOptions {
  */
 export async function compressVideo(
   file: File,
-  { maxWidth = 1280, crf = 28, onProgress }: CompressOptions = {}
+  { targetSizeBytes = 35 * 1024 * 1024, maxWidth = 1280, onProgress }: CompressOptions = {}
 ): Promise<File> {
+  const duration = await getVideoDuration(file).catch(() => null);
+
+  let videoBitrateKbps: number;
+  if (duration && duration > 0) {
+    const totalKbps = (targetSizeBytes * 8) / duration / 1000;
+    videoBitrateKbps = Math.max(
+      MIN_VIDEO_BITRATE_KBPS,
+      Math.round(totalKbps - AUDIO_BITRATE_KBPS)
+    );
+  } else {
+    videoBitrateKbps = FALLBACK_VIDEO_BITRATE_KBPS;
+  }
+
   const { FFmpeg } = await import("@ffmpeg/ffmpeg");
   const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
 
@@ -56,14 +102,18 @@ export async function compressVideo(
     `scale='min(${maxWidth},iw)':-2`, // -2 keeps height even (H.264 requirement)
     "-c:v",
     "libx264",
-    "-crf",
-    String(crf),
+    "-b:v",
+    `${videoBitrateKbps}k`,
+    "-maxrate",
+    `${Math.round(videoBitrateKbps * 1.5)}k`,
+    "-bufsize",
+    `${videoBitrateKbps * 2}k`,
     "-preset",
     "veryfast", // browser CPU is precious; favor speed over max compression
     "-c:a",
     "aac",
     "-b:a",
-    "96k",
+    `${AUDIO_BITRATE_KBPS}k`,
     "-movflags",
     "+faststart",
     outputName,
