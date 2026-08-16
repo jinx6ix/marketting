@@ -335,11 +335,19 @@ export function Composer({
                 onProgress: (pct) => setCompressProgress({ file: rawFile.name, pct }),
               });
             }
-          } catch {
-            // If compression itself fails (unsupported codec, browser
-            // memory limits, etc.), fall back to attempting the original
-            // upload — the 413 handling below still catches it cleanly.
-            file = rawFile;
+          } catch (compressErr) {
+            // Previously this silently fell back to uploading the
+            // untouched original — which meant a broken compression step
+            // and "the file is genuinely too big" looked identical from
+            // the outside (both ended in the same 413 message below,
+            // with no way to tell which one actually happened). Surface
+            // the real cause instead of masking it.
+            console.error("Video compression failed:", compressErr);
+            const reason =
+              compressErr instanceof Error ? compressErr.message : String(compressErr);
+            throw new Error(
+              `Couldn't compress "${rawFile.name}" in your browser (${reason}). Full details are in the browser console (F12 → Console tab).`
+            );
           } finally {
             setCompressProgress(null);
           }
