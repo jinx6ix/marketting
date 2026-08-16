@@ -22,16 +22,26 @@ import {
 } from "@/components/ui/table";
 import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
 import { daysAgoIso, formatNumber, formatPercent } from "@/lib/utils";
+import { DateRangeTabs } from "@/components/date-range-tabs";
+import { ExportCsvButton } from "@/components/export-csv-button";
 import Link from "next/link";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Analytics" };
 
-export default async function AnalyticsPage() {
-  const { orgId, supabase } = await getSessionContext();
+const VALID_RANGES = [7, 30, 90];
 
-  const since = daysAgoIso(30).slice(0, 10);
-  const sinceIso = daysAgoIso(30);
+export default async function AnalyticsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const { orgId, supabase } = await getSessionContext();
+  const { range } = await searchParams;
+  const days = VALID_RANGES.includes(Number(range)) ? Number(range) : 30;
+
+  const since = daysAgoIso(days).slice(0, 10);
+  const sinceIso = daysAgoIso(days);
 
   const [
     { data: accounts },
@@ -62,13 +72,9 @@ export default async function AnalyticsPage() {
       .eq("status", "published")
       .order("published_at", { ascending: false })
       .limit(50),
-    // Full (uncapped) 30-day published set, used for the per-account
-    // breakdown below — the `targets` query above is capped to 50 rows for
-    // the "Top posts" table and isn't representative once an org has more
-    // than 50 posts across all accounts combined.
     supabase
       .from("post_targets")
-      .select("id, platform, social_account_id")
+      .select("id, platform, social_account_id, item_id")
       .eq("org_id", orgId!)
       .eq("status", "published")
       .gte("published_at", sinceIso),
@@ -174,9 +180,7 @@ export default async function AnalyticsPage() {
     )
     .slice(0, 10);
 
-  // ── Per-account breakdown (last 30 days) — single source of truth that
-  // the platform comparison table below is then rolled up from, so the two
-  // views can never silently disagree. ──
+  // ── Per-account breakdown (last 30 days) ──
   const recentIds = (recentTargets ?? []).map((t) => t.id);
   const { data: recentSnaps } = recentIds.length
     ? await supabase
@@ -212,6 +216,49 @@ export default async function AnalyticsPage() {
   }
 
   const latestByAccount = new Map((latest ?? []).map((m) => [m.social_account_id, m]));
+
+  // ── Engagement by content type ──
+  const itemIdsForMedia = [...new Set((recentTargets ?? []).map((t) => t.item_id))];
+  const { data: mediaItems } = itemIdsForMedia.length
+    ? await supabase
+        .from("marketing_items")
+        .select("id, media")
+        .in("id", itemIdsForMedia)
+    : { data: [] as { id: string; media: unknown }[] };
+  const mediaTypeByItem = new Map(
+    (mediaItems ?? []).map((mi) => {
+      const media = (mi.media ?? []) as { type?: string }[];
+      const type =
+        media.length === 0
+          ? "text"
+          : media.some((m) => m.type === "video")
+            ? "video"
+            : "image";
+      return [mi.id, type];
+    })
+  );
+  const contentTypeAgg = new Map<string, { engagement: number; posts: number }>();
+  for (const t of recentTargets ?? []) {
+    const type = mediaTypeByItem.get(t.item_id) ?? "text";
+    const snap = latestRecentSnap.get(t.id);
+    const eng = snap ? (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0) : 0;
+    const bucket = contentTypeAgg.get(type) ?? { engagement: 0, posts: 0 };
+    bucket.engagement += eng;
+    bucket.posts += 1;
+    contentTypeAgg.set(type, bucket);
+  }
+  const CONTENT_TYPE_LABELS: Record<string, string> = {
+    image: "Image",
+    video: "Video",
+    text: "Text only",
+  };
+  const contentTypeData = [...contentTypeAgg.entries()]
+    .map(([type, v]) => ({
+      type: CONTENT_TYPE_LABELS[type] ?? type,
+      avgEngagement: v.posts > 0 ? Math.round(v.engagement / v.posts) : 0,
+      posts: v.posts,
+    }))
+    .sort((a, b) => b.avgEngagement - a.avgEngagement);
 
   interface AccountStat {
     id: string;
@@ -251,9 +298,6 @@ export default async function AnalyticsPage() {
     })
     .sort((a, b) => b.followers - a.followers);
 
-  // Platform-level rollup, aggregated from the per-account figures above
-  // (not recomputed independently) so the comparison table and the account
-  // cards can never disagree.
   interface PlatformStat {
     platform: Platform;
     accounts: number;
@@ -295,13 +339,40 @@ export default async function AnalyticsPage() {
     })
     .sort((a, b) => b.followers - a.followers);
 
+  // ── Prepare CSV data ──
+  const platformCsvData = platformStats.map((r) => ({
+    platform: PLATFORM_LABELS[r.platform],
+    accounts: r.accounts,
+    followers: r.followers,
+    growth: r.growth30d ?? "",
+    posts: r.posts30d,
+    avgEngagement: r.avgEngagementPerPost ?? "",
+    engagementRate: r.avgEngagementRate ?? "",
+    impressions: r.impressions,
+  }));
+
+  const accountCsvData = accountStats.map((r) => ({
+    account: r.displayName ?? r.handle ?? "",
+    platform: PLATFORM_LABELS[r.platform],
+    handle: r.handle ?? "",
+    followers: r.followers,
+    growth: r.growth30d ?? "",
+    posts: r.posts30d,
+    avgEngagement: r.avgEngagementPerPost ?? "",
+    engagementRate: r.avgEngagementRate ?? "",
+    impressions: r.impressions,
+  }));
+
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
-        <p className="text-sm text-muted-foreground">
-          Performance across every connected account, last 30 days.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
+          <p className="text-sm text-muted-foreground">
+            Performance across every connected account, last {days} days.
+          </p>
+        </div>
+        <DateRangeTabs current={days} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -315,7 +386,7 @@ export default async function AnalyticsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Follower growth</CardTitle>
-            <CardDescription>Last 30 days, per platform</CardDescription>
+            <CardDescription>Last {days} days, per platform</CardDescription>
           </CardHeader>
           <CardContent>
             {growthData.length > 1 ? (
@@ -345,13 +416,59 @@ export default async function AnalyticsPage() {
         </Card>
       </div>
 
-      {/* Platform comparison — aggregate rollup of every account below */}
+      {contentTypeData.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Engagement by content type</CardTitle>
+            <CardDescription>
+              Average engagement per post, image vs. video vs. text-only, last{" "}
+              {days} days
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <BarSeries
+              data={contentTypeData}
+              series={[{ key: "avgEngagement", label: "Avg engagement/post" }]}
+              xKey="type"
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Platform comparison */}
       {platformStats.length > 1 && (
         <section>
-          <SectionHeading
-            title="Platform comparison"
-            description="Every connected account on a platform, rolled into one row"
-          />
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <SectionHeading
+              title="Platform comparison"
+              description="Every connected account on a platform, rolled into one row"
+              noMargin
+            />
+            <ExportCsvButton
+              filename={`platform-comparison-${days}d.csv`}
+              data={platformCsvData}
+              columns={[
+                "platform",
+                "accounts",
+                "followers",
+                "growth",
+                "posts",
+                "avgEngagement",
+                "engagementRate",
+                "impressions",
+              ]}
+              columnLabels={{
+                platform: "Platform",
+                accounts: "Accounts",
+                followers: "Followers",
+                growth: `${days}d Growth`,
+                posts: `Posts (${days}d)`,
+                avgEngagement: "Avg engagement/post",
+                engagementRate: "Engagement rate %",
+                impressions: "Impressions",
+              }}
+            />
+          </div>
           <Card>
             <CardContent className="pt-6">
               <Table>
@@ -360,8 +477,8 @@ export default async function AnalyticsPage() {
                     <TableHead>Platform</TableHead>
                     <TableHead className="text-right">Accounts</TableHead>
                     <TableHead className="text-right">Followers</TableHead>
-                    <TableHead className="text-right">30d growth</TableHead>
-                    <TableHead className="text-right">Posts (30d)</TableHead>
+                    <TableHead className="text-right">{days}d growth</TableHead>
+                    <TableHead className="text-right">Posts ({days}d)</TableHead>
                     <TableHead className="text-right">Avg engagement/post</TableHead>
                     <TableHead className="text-right">Engagement rate</TableHead>
                     <TableHead className="text-right">Impressions</TableHead>
@@ -408,13 +525,43 @@ export default async function AnalyticsPage() {
         </section>
       )}
 
-      {/* Per-account breakdown — every connected account shown individually,
-          e.g. two Instagram accounts get two separate cards. */}
+      {/* Per-account breakdown */}
       <section>
-        <SectionHeading
-          title="Accounts"
-          description="Each connected account individually — sorted by followers"
-        />
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <SectionHeading
+            title="Accounts"
+            description="Each connected account individually — sorted by followers"
+            noMargin
+          />
+          {accountStats.length > 0 && (
+            <ExportCsvButton
+              filename={`account-breakdown-${days}d.csv`}
+              data={accountCsvData}
+              columns={[
+                "account",
+                "platform",
+                "handle",
+                "followers",
+                "growth",
+                "posts",
+                "avgEngagement",
+                "engagementRate",
+                "impressions",
+              ]}
+              columnLabels={{
+                account: "Account",
+                platform: "Platform",
+                handle: "Handle",
+                followers: "Followers",
+                growth: `${days}d Growth`,
+                posts: `Posts (${days}d)`,
+                avgEngagement: "Avg engagement/post",
+                engagementRate: "Engagement rate %",
+                impressions: "Impressions",
+              }}
+            />
+          )}
+        </div>
         {accountStats.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {accountStats.map((s) => (
@@ -530,12 +677,14 @@ export default async function AnalyticsPage() {
 function SectionHeading({
   title,
   description,
+  noMargin,
 }: {
   title: string;
   description: string;
+  noMargin?: boolean;
 }) {
   return (
-    <div className="mb-3">
+    <div className={noMargin ? undefined : "mb-3"}>
       <h2 className="text-sm font-semibold">{title}</h2>
       <p className="text-xs text-muted-foreground">{description}</p>
     </div>

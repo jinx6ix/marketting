@@ -5,6 +5,7 @@ import { useMemo, useState, useTransition } from "react";
 import { Sparkles, Wand2, Hash, Upload, X as XIcon, Eye } from "lucide-react";
 import * as tus from "tus-js-client";
 import { createClient } from "@/lib/supabase/client";
+import { compressVideo } from "@/lib/video/compress";
 import { createItem, publishNow, updateItem } from "../actions";
 import type { ItemFormValues } from "../schemas";
 import { Button } from "@/components/ui/button";
@@ -112,6 +113,10 @@ export function Composer({
 
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{
+    file: string;
+    pct: number;
+  } | null>(null);
+  const [compressProgress, setCompressProgress] = useState<{
     file: string;
     pct: number;
   } | null>(null);
@@ -230,12 +235,20 @@ export function Composer({
   }
 
   // Supabase's standard upload() endpoint is a single POST — for large
-  // video files (100-200MB+) that's slow to retry from scratch on any
-  // network blip and prone to just failing outright. Files over the 6MB
-  // TUS chunk size go through Supabase's resumable (TUS) upload endpoint
-  // instead, which uploads in chunks and can resume after a dropped
-  // connection instead of restarting the whole file.
+  // video files that's slow to retry from scratch on any network blip and
+  // prone to just failing outright. Files over the 6MB TUS chunk size go
+  // through Supabase's resumable (TUS) upload endpoint instead, which
+  // uploads in chunks and can resume after a dropped connection instead of
+  // restarting the whole file.
   const TUS_THRESHOLD_BYTES = 6 * 1024 * 1024;
+
+  // Supabase enforces a hard project-wide upload size cap regardless of any
+  // bucket setting — 50MB on the Free plan, and even Pro defaults to a
+  // limit that has to be manually raised. No code change can bypass that,
+  // so any video over this threshold gets compressed client-side first
+  // (see lib/video/compress.ts) rather than attempting an upload that's
+  // very likely to 413. 40MB leaves headroom under Free's 50MB hard cap.
+  const AUTO_COMPRESS_THRESHOLD_BYTES = 40 * 1024 * 1024;
 
   async function uploadResumable(
     file: File,
@@ -287,18 +300,49 @@ export function Composer({
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      for (const file of Array.from(files)) {
+      for (const rawFile of Array.from(files)) {
+        let file = rawFile;
+
+        if (
+          file.type.startsWith("video") &&
+          file.size > AUTO_COMPRESS_THRESHOLD_BYTES
+        ) {
+          setCompressProgress({ file: file.name, pct: 0 });
+          try {
+            file = await compressVideo(file, {
+              onProgress: (pct) => setCompressProgress({ file: rawFile.name, pct }),
+            });
+          } catch {
+            // If compression itself fails (unsupported codec, browser
+            // memory limits, etc.), fall back to attempting the original
+            // upload — the 413 handling below still catches it cleanly.
+            file = rawFile;
+          } finally {
+            setCompressProgress(null);
+          }
+        }
+
         const ext = file.name.split(".").pop() ?? "bin";
         const path = `${orgId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
-        if (file.size > TUS_THRESHOLD_BYTES && session?.access_token) {
-          setUploadProgress({ file: file.name, pct: 0 });
-          await uploadResumable(file, path, session.access_token);
-        } else {
-          const { error: upErr } = await supabase.storage
-            .from("media")
-            .upload(path, file, { contentType: file.type });
-          if (upErr) throw new Error(upErr.message);
+        try {
+          if (file.size > TUS_THRESHOLD_BYTES && session?.access_token) {
+            setUploadProgress({ file: file.name, pct: 0 });
+            await uploadResumable(file, path, session.access_token);
+          } else {
+            const { error: upErr } = await supabase.storage
+              .from("media")
+              .upload(path, file, { contentType: file.type });
+            if (upErr) throw new Error(upErr.message);
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (/413|maximum size exceeded/i.test(msg)) {
+            throw new Error(
+              `"${file.name}" is still too large for your Supabase project's upload limit. This is a project-level plan setting (Free plan caps at 50MB total, independent of anything in this app) — raise it under Supabase Dashboard → Project Settings → Storage → Global file size limit, or trim/compress the file further.`
+            );
+          }
+          throw e;
         }
 
         setMedia((prev) => [
@@ -314,6 +358,7 @@ export function Composer({
     } finally {
       setUploading(false);
       setUploadProgress(null);
+      setCompressProgress(null);
     }
   }
 
@@ -606,11 +651,13 @@ export function Composer({
                 ))}
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent">
                   <Upload className="size-3.5" />
-                  {uploadProgress
-                    ? `Uploading ${uploadProgress.file}… ${uploadProgress.pct}%`
-                    : uploading
-                      ? "Uploading…"
-                      : "Upload image/video"}
+                  {compressProgress
+                    ? `Compressing ${compressProgress.file}… ${compressProgress.pct}%`
+                    : uploadProgress
+                      ? `Uploading ${uploadProgress.file}… ${uploadProgress.pct}%`
+                      : uploading
+                        ? "Uploading…"
+                        : "Upload image/video"}
                   <input
                     type="file"
                     accept="image/*,video/*"

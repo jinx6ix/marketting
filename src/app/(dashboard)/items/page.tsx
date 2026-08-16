@@ -39,7 +39,13 @@ export default async function ItemsPage({
     .eq("org_id", orgId!)
     .order("created_at", { ascending: false })
     .range(from, from + PAGE_SIZE - 1);
-  if (status) query = query.eq("status", status as ItemStatus);
+  if (status) {
+    const statuses = status.split(",") as ItemStatus[];
+    query =
+      statuses.length > 1
+        ? query.in("status", statuses)
+        : query.eq("status", statuses[0]);
+  }
   if (type) query = query.eq("type", type as ItemType);
 
   const { data: items, count } = await query;
@@ -59,7 +65,7 @@ export default async function ItemsPage({
     { label: "In review", href: "/items?status=in_review" },
     { label: "Scheduled", href: "/items?status=scheduled" },
     { label: "Published", href: "/items?status=published" },
-    { label: "Failed", href: "/items?status=failed" },
+    { label: "Needs attention", href: "/items?status=failed,partially_published" },
   ];
 
   return (

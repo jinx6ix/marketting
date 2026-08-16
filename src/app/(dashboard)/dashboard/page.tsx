@@ -1,5 +1,11 @@
 import Link from "next/link";
-import { ArrowRight, CalendarClock, Inbox as InboxIcon, Lightbulb } from "lucide-react";
+import {
+  ArrowRight,
+  CalendarClock,
+  Inbox as InboxIcon,
+  Lightbulb,
+  AlertTriangle,
+} from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
 import { StatTile } from "@/components/charts/stat-tile";
 import { LineSeries, type SeriesDef } from "@/components/charts/line-series";
@@ -30,6 +36,8 @@ export default async function DashboardPage() {
     { data: mentions },
     { count: unreadCount },
     { data: strategy },
+    { data: attentionItems },
+    { count: attentionCount },
   ] = await Promise.all([
     supabase
       .from("social_accounts")
@@ -68,6 +76,22 @@ export default async function DashboardPage() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Items needing attention: failed to publish, or published on some
+    // platforms but not others. Org-scoped (RLS), safe to show every member
+    // — unlike job_runs (no org_id), which stays admin-only under
+    // Settings → Jobs.
+    supabase
+      .from("marketing_items")
+      .select("id, title, status, updated_at")
+      .eq("org_id", orgId!)
+      .in("status", ["failed", "partially_published"])
+      .order("updated_at", { ascending: false })
+      .limit(5),
+    supabase
+      .from("marketing_items")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId!)
+      .in("status", ["failed", "partially_published"]),
   ]);
 
   const accountById = new Map((accounts ?? []).map((a) => [a.id, a]));
@@ -138,6 +162,41 @@ export default async function DashboardPage() {
         />
         <StatTile label="Unread mentions" value={unreadCount ?? 0} format="raw" />
       </div>
+
+      {(attentionCount ?? 0) > 0 && (
+        <Card className="border-destructive/40 bg-destructive/[0.03]">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <AlertTriangle className="size-4 text-destructive" />
+                Needs attention
+              </CardTitle>
+              <Link
+                href="/items?status=failed,partially_published"
+                className="flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                View all ({attentionCount}) <ArrowRight className="size-3" />
+              </Link>
+            </div>
+            <CardDescription>
+              Items that failed to publish, or only went out on some
+              platforms
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {(attentionItems ?? []).map((item) => (
+              <Link
+                key={item.id}
+                href={`/items/${item.id}`}
+                className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-background p-2.5 transition-colors hover:border-destructive/60"
+              >
+                <span className="truncate text-sm font-medium">{item.title}</span>
+                <StatusBadge status={item.status} />
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">
