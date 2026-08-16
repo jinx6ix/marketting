@@ -43,19 +43,32 @@ async function withDefaultHashtags(
   orgId: string,
   hashtags: string[]
 ): Promise<string[]> {
+  // Dedupe the incoming list against itself first (case-insensitive,
+  // keeping the first-seen casing) — defense in depth in case a duplicate
+  // ever reaches this action some other way than the composer UI, e.g. a
+  // direct API call.
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const tag of hashtags) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(tag);
+  }
+
   const { data: org } = await supabase
     .from("organizations")
     .select("default_hashtags")
     .eq("id", orgId)
     .single();
   const defaults = org?.default_hashtags ?? [];
-  if (defaults.length === 0) return hashtags;
+  if (defaults.length === 0) return deduped;
 
-  const seen = new Set(hashtags.map((h) => h.toLowerCase()));
-  const merged = [...hashtags];
+  const merged = [...deduped];
   for (const tag of defaults) {
-    if (!seen.has(tag.toLowerCase())) {
-      seen.add(tag.toLowerCase());
+    const key = tag.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
       merged.push(tag);
     }
   }

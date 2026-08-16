@@ -49,6 +49,27 @@ const MAX_LENGTHS: Record<Platform, number> = {
 
 const MEDIA_REQUIRED: Platform[] = ["instagram", "tiktok", "pinterest", "youtube"];
 
+/**
+ * Merge new hashtags into an existing list without duplicates — matched
+ * case-insensitively ("Travel" and "travel" count as the same tag) since a
+ * plain `new Set([...])` only catches exact string matches, which is what
+ * let "Travel" (typed manually) and "travel" (from an AI suggestion, or an
+ * org default merged in server-side) both end up in the same list. Keeps
+ * whichever casing was already present rather than the incoming one, and
+ * caps at 30 to match the schema's hashtags limit.
+ */
+function mergeHashtags(existing: string[], incoming: string[]): string[] {
+  const seen = new Set(existing.map((h) => h.toLowerCase()));
+  const merged = [...existing];
+  for (const tag of incoming) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(tag);
+  }
+  return merged.slice(0, 30);
+}
+
 interface MediaEntry {
   storage_path: string;
   type: "image" | "video";
@@ -213,7 +234,7 @@ export function Composer({
       }
       if (action === "hashtags") {
         const data = (await res.json()) as { hashtags: string[] };
-        setHashtags((prev) => [...new Set([...prev, ...data.hashtags])].slice(0, 30));
+        setHashtags((prev) => mergeHashtags(prev, data.hashtags));
       } else {
         // stream into the body field
         setBody("");
@@ -608,9 +629,9 @@ export function Composer({
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && hashtagInput.trim()) {
                       e.preventDefault();
-                      setHashtags((prev) => [
-                        ...new Set([...prev, hashtagInput.trim().replace(/^#/, "")]),
-                      ]);
+                      setHashtags((prev) =>
+                        mergeHashtags(prev, [hashtagInput.trim().replace(/^#/, "")])
+                      );
                       setHashtagInput("");
                     }
                   }}
