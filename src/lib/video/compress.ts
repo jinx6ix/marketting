@@ -86,9 +86,20 @@ export async function compressVideo(
   }
 
   const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
+  // @ffmpeg/ffmpeg internally does `new Worker(new URL('./worker.js',
+  // import.meta.url))` to spin up its own worker thread when no
+  // classWorkerURL is given. Turbopack can't statically analyze that
+  // pattern inside the bundled package (a documented incompatibility —
+  // see ffmpegwasm/ffmpeg.wasm issues #655/#793) and throws "Cannot find
+  // module as expression is too dynamic" instead of ever reaching the
+  // actual compression code. Fetching the library's own worker.js from
+  // the CDN (matching the exact pinned package version in package.json)
+  // and handing it over explicitly sidesteps that code path entirely.
+  const ffmpegPkgURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/worker.js";
   await ffmpeg.load({
     coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
     wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+    classWorkerURL: await toBlobURL(ffmpegPkgURL, "text/javascript"),
   });
 
   const inputName = "input" + (file.name.match(/\.[^.]+$/)?.[0] ?? ".mp4");
