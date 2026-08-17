@@ -39,7 +39,7 @@ export function DashboardShell({
             className="absolute inset-0 bg-black/50"
           />
           <div className="relative z-10 h-full w-64 max-w-[80vw] animate-in slide-in-from-left">
-            <Sidebar onNavigate={() => setOpen(false)} />
+            <Sidebar collapsible={false} onNavigate={() => setOpen(false)} onClose={() => setOpen(false)} />
           </div>
         </div>
       )}

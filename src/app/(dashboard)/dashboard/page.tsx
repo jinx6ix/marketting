@@ -166,7 +166,7 @@ export default async function DashboardPage() {
       {(attentionCount ?? 0) > 0 && (
         <Card className="border-destructive/40 bg-destructive/[0.03]">
           <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2 text-base">
                 <AlertTriangle className="size-4 text-destructive" />
                 Needs attention
