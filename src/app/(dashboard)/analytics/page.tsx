@@ -24,10 +24,16 @@ import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
 import { daysAgoIso, formatNumber, formatPercent, isStale, relativeTime } from "@/lib/utils";
 import { DateRangeTabs } from "@/components/analytics/date-range-tabs";
 import { ExportCsvButton } from "@/components/export-csv-button";
+import { RefreshDataButton } from "@/features/settings/components/refresh-data-button";
 import Link from "next/link";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Analytics" };
+// The "Refresh data" button's Server Action can touch dozens of accounts
+// and posts sequentially (each a real platform API call) — give it more
+// room than the default route timeout instead of risking it getting cut
+// off mid-sweep.
+export const maxDuration = 300;
 
 const VALID_RANGES = [7, 30, 90];
 
@@ -359,7 +365,10 @@ export default async function AnalyticsPage({
             Performance across every connected account, last {days} days.
           </p>
         </div>
-        <DateRangeTabs current={days} />
+        <div className="flex items-center gap-2">
+          <RefreshDataButton />
+          <DateRangeTabs current={days} />
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

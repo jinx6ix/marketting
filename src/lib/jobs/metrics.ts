@@ -81,6 +81,63 @@ export async function syncAccountMetrics(
 }
 
 /**
+ * Fetch and store one fresh post-metrics snapshot for a single published
+ * target — extracted from the batch loop below for the same reason as
+ * syncAccountMetrics: reusable for an on-demand refresh instead of only
+ * ever running as part of the scheduled sweep. Unlike the batch loop, this
+ * does NOT check the decaying-cadence "skip if already fresh enough" rule —
+ * an explicit manual refresh means the person wants current data now,
+ * regardless of the automatic cadence.
+ */
+export async function syncPostMetrics(
+  targetId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const admin = createAdminClient();
+  const { data: target } = await admin
+    .from("post_targets")
+    .select("id, org_id, platform, social_account_id, external_post_id, status")
+    .eq("id", targetId)
+    .single();
+  if (!target) return { ok: false, error: "Post not found" };
+  if (target.status !== "published" || !target.external_post_id) {
+    return { ok: false, error: "Post hasn't published yet" };
+  }
+
+  const platform = target.platform as Platform;
+  try {
+    const { account, tokens } = await getAccountTokens(target.social_account_id);
+    const adapter = getAdapter(platform);
+    if (!adapter.capabilities.postMetrics) {
+      return { ok: false, error: `${platform} doesn't support post metrics.` };
+    }
+
+    const m = await adapter.fetchPostMetrics(tokens, account, target.external_post_id);
+    const engagement =
+      (m.likes ?? 0) + (m.comments ?? 0) + (m.shares ?? 0) + (m.saves ?? 0);
+    await admin.from("post_metric_snapshots").insert({
+      org_id: target.org_id,
+      post_target_id: target.id,
+      likes: m.likes ?? null,
+      comments: m.comments ?? null,
+      shares: m.shares ?? null,
+      saves: m.saves ?? null,
+      impressions: m.impressions ?? null,
+      reach: m.reach ?? null,
+      video_views: m.videoViews ?? null,
+      engagement_rate:
+        m.engagementRate ?? (m.impressions ? (engagement / m.impressions) * 100 : null),
+      raw: (m.raw ?? null) as Json,
+    });
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof SocialApiError && e.retryAfterMs) {
+      markRateLimited(platform, e.retryAfterMs);
+    }
+    return { ok: false, error: e instanceof Error ? e.message : "Sync failed" };
+  }
+}
+
+/**
  * Metrics job (every 30 min): snapshot account metrics round-robin
  * (least recently polled first), plus post metrics for recent posts
  * with decaying cadence (hourly first 48h, then daily).
@@ -115,7 +172,7 @@ export async function collectMetrics(): Promise<ReturnType<typeof runJob>> {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86400_000).toISOString();
     const { data: targets } = await admin
       .from("post_targets")
-      .select("id, org_id, platform, social_account_id, external_post_id, published_at")
+      .select("id, platform, published_at")
       .eq("status", "published")
       .not("external_post_id", "is", null)
       .gte("published_at", thirtyDaysAgo)
@@ -143,41 +200,8 @@ export async function collectMetrics(): Promise<ReturnType<typeof runJob>> {
 
       if (!(await tryAcquire(platform))) continue;
 
-      try {
-        const { account, tokens } = await getAccountTokens(
-          target.social_account_id
-        );
-        const adapter = getAdapter(platform);
-        if (!adapter.capabilities.postMetrics) continue;
-
-        const m = await adapter.fetchPostMetrics(
-          tokens,
-          account,
-          target.external_post_id!
-        );
-        const engagement =
-          (m.likes ?? 0) + (m.comments ?? 0) + (m.shares ?? 0) + (m.saves ?? 0);
-        await admin.from("post_metric_snapshots").insert({
-          org_id: target.org_id,
-          post_target_id: target.id,
-          likes: m.likes ?? null,
-          comments: m.comments ?? null,
-          shares: m.shares ?? null,
-          saves: m.saves ?? null,
-          impressions: m.impressions ?? null,
-          reach: m.reach ?? null,
-          video_views: m.videoViews ?? null,
-          engagement_rate:
-            m.engagementRate ??
-            (m.impressions ? (engagement / m.impressions) * 100 : null),
-          raw: (m.raw ?? null) as Json,
-        });
-        processed++;
-      } catch (e) {
-        if (e instanceof SocialApiError && e.retryAfterMs) {
-          markRateLimited(platform, e.retryAfterMs);
-        }
-      }
+      const result = await syncPostMetrics(target.id);
+      if (result.ok) processed++;
     }
 
     return processed;

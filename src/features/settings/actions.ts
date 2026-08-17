@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getSessionContext } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { syncAccountMetrics } from "@/lib/jobs/metrics";
-import type { OrgRole } from "@/types/database";
+import { syncAccountMetrics, syncPostMetrics } from "@/lib/jobs/metrics";
+import { tryAcquire } from "@/lib/jobs/rate-limit";
+import type { OrgRole, Platform } from "@/types/database";
 
 export interface ActionResult {
   error?: string;
@@ -36,6 +37,64 @@ export async function syncAccountNow(accountId: string): Promise<ActionResult> {
   revalidatePath("/settings/accounts");
   revalidatePath("/analytics");
   return { message: "Synced" };
+}
+
+export interface RefreshMetricsResult extends ActionResult {
+  accountsSynced?: number;
+  postsSynced?: number;
+}
+
+/**
+ * "Refresh data" on the Analytics page — syncs every active account and
+ * every recently-published post belonging to THIS org right now, instead
+ * of waiting for the next scheduled metrics job tick (every 30 min) or for
+ * this org's turn in that job's global round-robin across every tenant.
+ *
+ * Still respects tryAcquire() (unlike the single-item syncAccountNow /
+ * per-post sync, which deliberately bypass it) — this can touch dozens of
+ * accounts/posts in one click, and skipping the rate-limit budget entirely
+ * for a burst that size risks tripping real platform rate limits rather
+ * than just a single extra request.
+ */
+export async function refreshOrgMetrics(): Promise<RefreshMetricsResult> {
+  const { user, orgId } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const admin = createAdminClient();
+
+  const { data: accounts } = await admin
+    .from("social_accounts")
+    .select("id, platform")
+    .eq("org_id", orgId)
+    .eq("status", "active");
+
+  let accountsSynced = 0;
+  for (const acc of accounts ?? []) {
+    if (!(await tryAcquire(acc.platform as Platform))) continue;
+    const result = await syncAccountMetrics(acc.id);
+    if (result.ok) accountsSynced++;
+  }
+
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400_000).toISOString();
+  const { data: targets } = await admin
+    .from("post_targets")
+    .select("id, platform")
+    .eq("org_id", orgId)
+    .eq("status", "published")
+    .not("external_post_id", "is", null)
+    .gte("published_at", thirtyDaysAgo)
+    .limit(100);
+
+  let postsSynced = 0;
+  for (const t of targets ?? []) {
+    if (!(await tryAcquire(t.platform as Platform))) continue;
+    const result = await syncPostMetrics(t.id);
+    if (result.ok) postsSynced++;
+  }
+
+  revalidatePath("/analytics");
+  revalidatePath("/settings/accounts");
+  return { accountsSynced, postsSynced };
 }
 
 const ASSIGNABLE_ROLES = ["admin", "editor", "viewer"] as const;
