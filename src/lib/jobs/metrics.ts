@@ -8,6 +8,79 @@ import { runJob } from "./runner";
 import type { Platform, Json } from "@/types/database";
 
 /**
+ * Fetch and store one fresh account-metrics snapshot for a single account —
+ * the same logic the batch job below runs per-account, extracted so it can
+ * also be triggered on demand (see the "Sync now" button on Settings →
+ * Accounts) instead of only ever running as part of the round-robin batch.
+ * Does NOT check/consume the rate-limit budget — that's a deliberate
+ * per-account manual action, not an automated sweep, so it bypasses
+ * tryAcquire() entirely (an explicit "reconnect and check now" click
+ * shouldn't silently no-op just because the batch job used up the budget).
+ */
+export async function syncAccountMetrics(
+  accountId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const admin = createAdminClient();
+  const { data: acc } = await admin
+    .from("social_accounts")
+    .select("id, org_id, platform, metadata, status")
+    .eq("id", accountId)
+    .single();
+  if (!acc) return { ok: false, error: "Account not found" };
+  if (acc.status !== "active") {
+    return {
+      ok: false,
+      error: `Account status is "${acc.status}" — reconnect it before syncing.`,
+    };
+  }
+
+  const platform = acc.platform as Platform;
+  try {
+    const { account, tokens } = await getAccountTokens(acc.id);
+    const adapter = getAdapter(platform);
+    if (!adapter.capabilities.accountMetrics) {
+      return { ok: false, error: `${platform} doesn't support account metrics.` };
+    }
+
+    const m = await adapter.fetchAccountMetrics(tokens, account);
+    await admin.from("account_metric_snapshots").insert({
+      org_id: acc.org_id,
+      social_account_id: acc.id,
+      followers: m.followers ?? null,
+      following: m.following ?? null,
+      posts_count: m.postsCount ?? null,
+      impressions: m.impressions ?? null,
+      reach: m.reach ?? null,
+      profile_views: m.profileViews ?? null,
+      engagement_total: m.engagementTotal ?? null,
+      raw: (m.raw ?? null) as Json,
+    });
+    await admin
+      .from("social_accounts")
+      .update({
+        metadata: {
+          ...(acc.metadata as Record<string, unknown>),
+          last_polled: new Date().toISOString(),
+        } as Json,
+      })
+      .eq("id", acc.id);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof SocialApiError && e.retryAfterMs) {
+      markRateLimited(platform, e.retryAfterMs);
+    }
+    if (e instanceof SocialApiError && e.code.startsWith("http_401")) {
+      await admin.from("social_accounts").update({ status: "expired" }).eq("id", acc.id);
+      return {
+        ok: false,
+        error: "Access token was rejected — account marked expired, please reconnect.",
+      };
+    }
+    return { ok: false, error: e instanceof Error ? e.message : "Sync failed" };
+  }
+}
+
+/**
  * Metrics job (every 30 min): snapshot account metrics round-robin
  * (least recently polled first), plus post metrics for recent posts
  * with decaying cadence (hourly first 48h, then daily).
@@ -32,48 +105,10 @@ export async function collectMetrics(): Promise<ReturnType<typeof runJob>> {
 
     for (const acc of sorted) {
       const platform = acc.platform as Platform;
-      if (!tryAcquire(platform)) continue;
+      if (!(await tryAcquire(platform))) continue;
 
-      try {
-        const { account, tokens } = await getAccountTokens(acc.id);
-        const adapter = getAdapter(platform);
-        if (!adapter.capabilities.accountMetrics) continue;
-
-        const m = await adapter.fetchAccountMetrics(tokens, account);
-        await admin.from("account_metric_snapshots").insert({
-          org_id: acc.org_id,
-          social_account_id: acc.id,
-          followers: m.followers ?? null,
-          following: m.following ?? null,
-          posts_count: m.postsCount ?? null,
-          impressions: m.impressions ?? null,
-          reach: m.reach ?? null,
-          profile_views: m.profileViews ?? null,
-          engagement_total: m.engagementTotal ?? null,
-          raw: (m.raw ?? null) as Json,
-        });
-        await admin
-          .from("social_accounts")
-          .update({
-            metadata: {
-              ...(acc.metadata as Record<string, unknown>),
-              last_polled: new Date().toISOString(),
-            } as Json,
-          })
-          .eq("id", acc.id);
-        processed++;
-      } catch (e) {
-        if (e instanceof SocialApiError && e.retryAfterMs) {
-          markRateLimited(platform, e.retryAfterMs);
-        }
-        // token problems → flag account
-        if (e instanceof SocialApiError && e.code.startsWith("http_401")) {
-          await admin
-            .from("social_accounts")
-            .update({ status: "expired" })
-            .eq("id", acc.id);
-        }
-      }
+      const result = await syncAccountMetrics(acc.id);
+      if (result.ok) processed++;
     }
 
     // Post metrics: published in last 30 days, decaying cadence.
@@ -106,7 +141,7 @@ export async function collectMetrics(): Promise<ReturnType<typeof runJob>> {
         if (snapshotAgeHours < requiredGap) continue;
       }
 
-      if (!tryAcquire(platform)) continue;
+      if (!(await tryAcquire(platform))) continue;
 
       try {
         const { account, tokens } = await getAccountTokens(

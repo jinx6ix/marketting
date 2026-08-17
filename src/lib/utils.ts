@@ -25,6 +25,13 @@ export function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 86400_000).toISOString();
 }
 
+/** True if `date` is null/undefined, or older than `hours` hours ago. */
+export function isStale(date: string | Date | null | undefined, hours: number): boolean {
+  if (!date) return true;
+  const d = typeof date === "string" ? new Date(date) : date;
+  return Date.now() - d.getTime() > hours * 60 * 60 * 1000;
+}
+
 export function relativeTime(date: string | Date): string {
   const d = typeof date === "string" ? new Date(date) : date;
   const diff = Date.now() - d.getTime();

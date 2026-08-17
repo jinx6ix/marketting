@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import {
   addMonths,
   eachDayOfInterval,
@@ -15,7 +15,11 @@ import {
 } from "date-fns";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { StatTile } from "@/components/charts/stat-tile";
+import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
 import { cn } from "@/lib/utils";
+import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Calendar" };
 
@@ -28,42 +32,102 @@ const STATUS_DOT: Record<string, string> = {
   failed: "bg-destructive",
 };
 
+const ALL_PLATFORMS: Platform[] = [
+  "facebook",
+  "instagram",
+  "x",
+  "tiktok",
+  "youtube",
+  "linkedin",
+  "pinterest",
+];
+
 export default async function CalendarPage({
   searchParams,
 }: {
-  searchParams: Promise<{ month?: string }>;
+  searchParams: Promise<{ month?: string; platform?: string }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
-  const { month } = await searchParams;
+  const { month, platform } = await searchParams;
 
-  const current = month
-    ? parse(month, "yyyy-MM", new Date())
-    : new Date();
+  const current = month ? parse(month, "yyyy-MM", new Date()) : new Date();
   const monthStart = startOfMonth(current);
   const monthEnd = endOfMonth(current);
   const gridStart = startOfWeek(monthStart);
   const gridEnd = endOfWeek(monthEnd);
 
-  const { data: items } = await supabase
+  const { data: rawItems } = await supabase
     .from("marketing_items")
-    .select("id, title, status, scheduled_at, type, destination")
+    .select(
+      "id, title, status, scheduled_at, type, destination, post_targets(platform)"
+    )
     .eq("org_id", orgId!)
     .not("scheduled_at", "is", null)
     .gte("scheduled_at", gridStart.toISOString())
     .lte("scheduled_at", gridEnd.toISOString())
     .order("scheduled_at");
 
+  const items = (rawItems ?? []).map((i) => ({
+    ...i,
+    platforms: [
+      ...new Set((i.post_targets ?? []).map((t) => t.platform as Platform)),
+    ],
+  }));
+
+  const visibleItems = platform
+    ? items.filter((i) => i.platforms.includes(platform as Platform))
+    : items;
+
+  const inMonth = visibleItems.filter((i) => isSameMonth(new Date(i.scheduled_at!), current));
+  const scheduledCount = inMonth.filter((i) => i.status === "scheduled").length;
+  const publishedCount = inMonth.filter((i) =>
+    ["published", "partially_published"].includes(i.status)
+  ).length;
+  const attentionCount = inMonth.filter((i) =>
+    ["failed", "partially_published"].includes(i.status)
+  ).length;
+
   const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
   const prev = format(addMonths(current, -1), "yyyy-MM");
   const next = format(addMonths(current, 1), "yyyy-MM");
 
+  function monthHref(m: string) {
+    const params = new URLSearchParams();
+    params.set("month", m);
+    if (platform) params.set("platform", platform);
+    return `/calendar?${params.toString()}`;
+  }
+
   return (
     <div className="flex h-full flex-col space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Calendar</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Calendar</h1>
+          <p className="text-sm text-muted-foreground">
+            Everything scheduled or published, at a glance.
+          </p>
+        </div>
         <div className="flex items-center gap-2">
+          <form action="/calendar" method="GET" className="flex items-center gap-1.5">
+            {month && <input type="hidden" name="month" value={month} />}
+            <Select
+              name="platform"
+              defaultValue={platform ?? ""}
+              className="h-8 w-36 text-xs"
+            >
+              <option value="">All platforms</option>
+              {ALL_PLATFORMS.map((p) => (
+                <option key={p} value={p}>
+                  {PLATFORM_LABELS[p]}
+                </option>
+              ))}
+            </Select>
+            <Button type="submit" variant="outline" size="sm" className="h-8">
+              Filter
+            </Button>
+          </form>
           <Button variant="outline" size="icon" asChild>
-            <Link href={`/calendar?month=${prev}`} aria-label="Previous month">
+            <Link href={monthHref(prev)} aria-label="Previous month">
               <ChevronLeft />
             </Link>
           </Button>
@@ -71,16 +135,29 @@ export default async function CalendarPage({
             {format(current, "MMMM yyyy")}
           </span>
           <Button variant="outline" size="icon" asChild>
-            <Link href={`/calendar?month=${next}`} aria-label="Next month">
+            <Link href={monthHref(next)} aria-label="Next month">
               <ChevronRight />
             </Link>
           </Button>
           {month && (
             <Button variant="ghost" size="sm" asChild>
-              <Link href="/calendar">Today</Link>
+              <Link href={platform ? `/calendar?platform=${platform}` : "/calendar"}>
+                Today
+              </Link>
             </Button>
           )}
+          <Button size="sm" asChild>
+            <Link href="/items/new" className="flex items-center gap-1.5">
+              <Plus className="size-4" /> New
+            </Link>
+          </Button>
         </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatTile label="Scheduled this month" value={scheduledCount} format="raw" />
+        <StatTile label="Published this month" value={publishedCount} format="raw" />
+        <StatTile label="Needs attention" value={attentionCount} format="raw" />
       </div>
 
       <div className="grid grid-cols-7 gap-px overflow-hidden rounded-lg border bg-border text-xs">
@@ -93,57 +170,105 @@ export default async function CalendarPage({
           </div>
         ))}
         {days.map((day) => {
-          const dayItems = (items ?? []).filter(
+          const dayItems = visibleItems.filter(
             (i) => i.scheduled_at && isSameDay(new Date(i.scheduled_at), day)
           );
+          const dateParam = format(day, "yyyy-MM-dd");
           return (
             <div
               key={day.toISOString()}
               className={cn(
-                "min-h-24 space-y-1 bg-background p-1.5",
+                "group relative flex min-h-24 flex-col bg-background p-1.5",
                 !isSameMonth(day, current) && "bg-muted/40 text-muted-foreground"
               )}
             >
-              <div
-                className={cn(
-                  "flex size-5 items-center justify-center rounded-full text-[11px]",
-                  isToday(day) && "bg-primary font-semibold text-primary-foreground"
-                )}
-              >
-                {format(day, "d")}
-              </div>
-              {dayItems.map((item) => (
-                <Link
-                  key={item.id}
-                  href={`/items/${item.id}`}
-                  className="flex items-center gap-1.5 truncate rounded border bg-card px-1.5 py-1 transition-colors hover:border-primary/50"
-                  title={`${item.title} — ${item.status.replace(/_/g, " ")}${
-                    item.scheduled_at
-                      ? ` at ${format(new Date(item.scheduled_at), "HH:mm")}`
-                      : ""
-                  }`}
+              <div className="flex items-center justify-between">
+                <div
+                  className={cn(
+                    "flex size-5 items-center justify-center rounded-full text-[11px]",
+                    isToday(day) && "bg-primary font-semibold text-primary-foreground"
+                  )}
                 >
-                  <span
-                    className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      STATUS_DOT[item.status] ?? "bg-muted-foreground"
-                    )}
-                  />
-                  <span className="truncate">{item.title}</span>
+                  {format(day, "d")}
+                </div>
+                <Link
+                  href={`/items/new?date=${dateParam}`}
+                  className="hidden size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 sm:flex"
+                  aria-label={`New item for ${dateParam}`}
+                  title="New item for this day"
+                >
+                  <Plus className="size-3.5" />
                 </Link>
-              ))}
+              </div>
+              <div className="mt-1 max-h-28 space-y-1 overflow-y-auto pr-0.5">
+                {dayItems.map((item) => (
+                  <Link
+                    key={item.id}
+                    href={`/items/${item.id}`}
+                    className="block truncate rounded border bg-card px-1.5 py-1 transition-colors hover:border-primary/50"
+                    title={`${item.title} — ${item.status.replace(/_/g, " ")}${
+                      item.scheduled_at
+                        ? ` at ${format(new Date(item.scheduled_at), "HH:mm")}`
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          STATUS_DOT[item.status] ?? "bg-muted-foreground"
+                        )}
+                      />
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {item.scheduled_at ? format(new Date(item.scheduled_at), "HH:mm") : ""}
+                      </span>
+                      <span className="truncate">{item.title}</span>
+                    </div>
+                    {item.platforms.length > 0 && (
+                      <div className="mt-0.5 flex items-center gap-0.5 pl-3">
+                        {item.platforms.slice(0, 5).map((p) => (
+                          <span
+                            key={p}
+                            className="size-1.5 rounded-full"
+                            style={{ background: PLATFORM_COLORS[p] }}
+                            title={PLATFORM_LABELS[p]}
+                          />
+                        ))}
+                        {item.platforms.length > 5 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            +{item.platforms.length - 5}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </Link>
+                ))}
+              </div>
             </div>
           );
         })}
       </div>
 
-      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-        {Object.entries(STATUS_DOT).map(([status, cls]) => (
-          <span key={status} className="flex items-center gap-1.5">
-            <span className={cn("size-2 rounded-full", cls)} />
-            {status.replace(/_/g, " ")}
-          </span>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-4">
+          {Object.entries(STATUS_DOT).map(([status, cls]) => (
+            <span key={status} className="flex items-center gap-1.5">
+              <span className={cn("size-2 rounded-full", cls)} />
+              {status.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {ALL_PLATFORMS.map((p) => (
+            <span key={p} className="flex items-center gap-1.5">
+              <span
+                className="size-2 rounded-full"
+                style={{ background: PLATFORM_COLORS[p] }}
+              />
+              {PLATFORM_LABELS[p]}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );

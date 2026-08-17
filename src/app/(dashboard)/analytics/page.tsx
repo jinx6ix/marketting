@@ -21,8 +21,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
-import { daysAgoIso, formatNumber, formatPercent } from "@/lib/utils";
-import { DateRangeTabs } from "@/components/date-range-tabs";
+import { daysAgoIso, formatNumber, formatPercent, isStale, relativeTime } from "@/lib/utils";
+import { DateRangeTabs } from "@/components/analytics/date-range-tabs";
 import { ExportCsvButton } from "@/components/export-csv-button";
 import Link from "next/link";
 import type { Platform } from "@/types/database";
@@ -72,6 +72,10 @@ export default async function AnalyticsPage({
       .eq("status", "published")
       .order("published_at", { ascending: false })
       .limit(50),
+    // Full (uncapped) date-range published set, used for the per-account
+    // breakdown below — the `targets` query above is capped to 50 rows for
+    // the "Top posts" table and isn't representative once an org has more
+    // than 50 posts across all accounts combined.
     supabase
       .from("post_targets")
       .select("id, platform, social_account_id, item_id")
@@ -180,7 +184,9 @@ export default async function AnalyticsPage({
     )
     .slice(0, 10);
 
-  // ── Per-account breakdown (last 30 days) ──
+  // ── Per-account breakdown (last 30 days) — single source of truth that
+  // the platform comparison table below is then rolled up from, so the two
+  // views can never silently disagree. ──
   const recentIds = (recentTargets ?? []).map((t) => t.id);
   const { data: recentSnaps } = recentIds.length
     ? await supabase
@@ -217,7 +223,9 @@ export default async function AnalyticsPage({
 
   const latestByAccount = new Map((latest ?? []).map((m) => [m.social_account_id, m]));
 
-  // ── Engagement by content type ──
+  // ── Engagement by content type (image vs. video vs. text-only) ──
+  // One batched query for every distinct item behind the date-range
+  // targets, rather than a query per post.
   const itemIdsForMedia = [...new Set((recentTargets ?? []).map((t) => t.item_id))];
   const { data: mediaItems } = itemIdsForMedia.length
     ? await supabase
@@ -298,6 +306,9 @@ export default async function AnalyticsPage({
     })
     .sort((a, b) => b.followers - a.followers);
 
+  // Platform-level rollup, aggregated from the per-account figures above
+  // (not recomputed independently) so the comparison table and the account
+  // cards can never disagree.
   interface PlatformStat {
     platform: Platform;
     accounts: number;
@@ -338,30 +349,6 @@ export default async function AnalyticsPage({
       };
     })
     .sort((a, b) => b.followers - a.followers);
-
-  // ── Prepare CSV data ──
-  const platformCsvData = platformStats.map((r) => ({
-    platform: PLATFORM_LABELS[r.platform],
-    accounts: r.accounts,
-    followers: r.followers,
-    growth: r.growth30d ?? "",
-    posts: r.posts30d,
-    avgEngagement: r.avgEngagementPerPost ?? "",
-    engagementRate: r.avgEngagementRate ?? "",
-    impressions: r.impressions,
-  }));
-
-  const accountCsvData = accountStats.map((r) => ({
-    account: r.displayName ?? r.handle ?? "",
-    platform: PLATFORM_LABELS[r.platform],
-    handle: r.handle ?? "",
-    followers: r.followers,
-    growth: r.growth30d ?? "",
-    posts: r.posts30d,
-    avgEngagement: r.avgEngagementPerPost ?? "",
-    engagementRate: r.avgEngagementRate ?? "",
-    impressions: r.impressions,
-  }));
 
   return (
     <div className="space-y-8">
@@ -435,7 +422,7 @@ export default async function AnalyticsPage({
         </Card>
       )}
 
-      {/* Platform comparison */}
+      {/* Platform comparison — aggregate rollup of every account below */}
       {platformStats.length > 1 && (
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -446,27 +433,26 @@ export default async function AnalyticsPage({
             />
             <ExportCsvButton
               filename={`platform-comparison-${days}d.csv`}
-              data={platformCsvData}
-              columns={[
-                "platform",
-                "accounts",
-                "followers",
-                "growth",
-                "posts",
-                "avgEngagement",
-                "engagementRate",
-                "impressions",
+              headers={[
+                "Platform",
+                "Accounts",
+                "Followers",
+                `${days}d Growth`,
+                `Posts (${days}d)`,
+                "Avg engagement/post",
+                "Engagement rate %",
+                "Impressions",
               ]}
-              columnLabels={{
-                platform: "Platform",
-                accounts: "Accounts",
-                followers: "Followers",
-                growth: `${days}d Growth`,
-                posts: `Posts (${days}d)`,
-                avgEngagement: "Avg engagement/post",
-                engagementRate: "Engagement rate %",
-                impressions: "Impressions",
-              }}
+              rows={platformStats.map((r) => [
+                PLATFORM_LABELS[r.platform],
+                r.accounts,
+                r.followers,
+                r.growth30d ?? "",
+                r.posts30d,
+                r.avgEngagementPerPost == null ? "" : Math.round(r.avgEngagementPerPost),
+                r.avgEngagementRate == null ? "" : r.avgEngagementRate.toFixed(1),
+                r.impressions,
+              ])}
             />
           </div>
           <Card>
@@ -525,7 +511,8 @@ export default async function AnalyticsPage({
         </section>
       )}
 
-      {/* Per-account breakdown */}
+      {/* Per-account breakdown — every connected account shown individually,
+          e.g. two Instagram accounts get two separate cards. */}
       <section>
         <div className="mb-3 flex items-center justify-between gap-3">
           <SectionHeading
@@ -536,29 +523,28 @@ export default async function AnalyticsPage({
           {accountStats.length > 0 && (
             <ExportCsvButton
               filename={`account-breakdown-${days}d.csv`}
-              data={accountCsvData}
-              columns={[
-                "account",
-                "platform",
-                "handle",
-                "followers",
-                "growth",
-                "posts",
-                "avgEngagement",
-                "engagementRate",
-                "impressions",
+              headers={[
+                "Account",
+                "Platform",
+                "Handle",
+                "Followers",
+                `${days}d Growth`,
+                `Posts (${days}d)`,
+                "Avg engagement/post",
+                "Engagement rate %",
+                "Impressions",
               ]}
-              columnLabels={{
-                account: "Account",
-                platform: "Platform",
-                handle: "Handle",
-                followers: "Followers",
-                growth: `${days}d Growth`,
-                posts: `Posts (${days}d)`,
-                avgEngagement: "Avg engagement/post",
-                engagementRate: "Engagement rate %",
-                impressions: "Impressions",
-              }}
+              rows={accountStats.map((r) => [
+                r.displayName ?? r.handle ?? "",
+                PLATFORM_LABELS[r.platform],
+                r.handle ?? "",
+                r.followers,
+                r.growth30d ?? "",
+                r.posts30d,
+                r.avgEngagementPerPost == null ? "" : Math.round(r.avgEngagementPerPost),
+                r.avgEngagementRate == null ? "" : r.avgEngagementRate.toFixed(1),
+                r.impressions,
+              ])}
             />
           )}
         </div>
@@ -607,6 +593,7 @@ export default async function AnalyticsPage({
                 <TableHead>Shares</TableHead>
                 <TableHead>Impressions</TableHead>
                 <TableHead>Published</TableHead>
+                <TableHead>Updated</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -615,6 +602,7 @@ export default async function AnalyticsPage({
                   id: string;
                   title: string;
                 } | null;
+                const stale = metrics && isStale(metrics.captured_at, 36);
                 return (
                   <TableRow key={target.id}>
                     <TableCell>
@@ -642,13 +630,25 @@ export default async function AnalyticsPage({
                         ? new Date(target.published_at).toLocaleDateString()
                         : "—"}
                     </TableCell>
+                    <TableCell
+                      className={
+                        stale ? "font-medium text-warning" : "text-muted-foreground"
+                      }
+                      title={
+                        stale
+                          ? "No fresh metrics sync in over 36 hours — these numbers may not match the platform right now."
+                          : undefined
+                      }
+                    >
+                      {metrics ? relativeTime(metrics.captured_at) : "never"}
+                    </TableCell>
                   </TableRow>
                 );
               })}
               {topPosts.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="py-8 text-center text-muted-foreground"
                   >
                     No published posts yet — metrics appear after posts publish

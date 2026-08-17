@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +13,9 @@ import {
 } from "@/components/ui/card";
 import { RecommendationActions } from "@/features/strategies/components/strategy-actions";
 import { DeleteButton } from "@/components/delete-button";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { deleteStrategy } from "@/features/strategies/actions";
-import { relativeTime } from "@/lib/utils";
+import { cn, relativeTime } from "@/lib/utils";
 
 export const metadata = { title: "Strategy" };
 
@@ -25,6 +27,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   gap_hashtag: "Hashtag gap",
   action: "Action",
 };
+
+type RecFilter = "all" | "proposed" | "accepted" | "dismissed";
 
 interface SuggestedCreateItem {
   type?: string;
@@ -38,10 +42,13 @@ interface SuggestedCreateItem {
 
 export default async function StrategyDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ rec?: string }>;
 }) {
   const { id } = await params;
+  const { rec: recParam } = await searchParams;
   const { orgId, supabase } = await getSessionContext();
 
   const { data: strategy } = await supabase
@@ -52,38 +59,69 @@ export default async function StrategyDetailPage({
     .single();
   if (!strategy) notFound();
 
-  const { data: recommendations } = await supabase
+  const { data: allRecommendations } = await supabase
     .from("ai_recommendations")
     .select("*")
     .eq("strategy_id", id)
     .order("priority")
     .order("created_at");
 
+  const recommendations = allRecommendations ?? [];
+  const openCount = recommendations.filter((r) => r.status === "proposed").length;
+  const acceptedCount = recommendations.filter((r) =>
+    ["accepted", "done"].includes(r.status)
+  ).length;
+  const dismissedCount = recommendations.filter((r) => r.status === "dismissed").length;
+
+  const recFilter: RecFilter =
+    recParam === "proposed" || recParam === "accepted" || recParam === "dismissed"
+      ? recParam
+      : "all";
+  const visibleRecs =
+    recFilter === "all"
+      ? recommendations
+      : recFilter === "accepted"
+        ? recommendations.filter((r) => ["accepted", "done"].includes(r.status))
+        : recommendations.filter((r) => r.status === recFilter);
+
+  const REC_TABS: { label: string; value: RecFilter; count: number }[] = [
+    { label: "All", value: "all", count: recommendations.length },
+    { label: "Open", value: "proposed", count: openCount },
+    { label: "Accepted", value: "accepted", count: acceptedCount },
+    { label: "Dismissed", value: "dismissed", count: dismissedCount },
+  ];
+
   return (
     <div className="max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">{strategy.title}</h1>
-          <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-            <StatusBadge status={strategy.status} />
-            <span>· {relativeTime(strategy.created_at)}</span>
-            {strategy.provider && (
-              <span>
-                · {strategy.provider}/{strategy.model}
-              </span>
-            )}
+      {strategy.status === "running" && <AutoRefresh intervalMs={5000} />}
+
+      <div>
+        <Link
+          href="/strategies"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="size-3.5" />
+          All strategies
+        </Link>
+        <div className="mt-2 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">{strategy.title}</h1>
+            <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+              <StatusBadge status={strategy.status} />
+              <span>· {relativeTime(strategy.created_at)}</span>
+              {strategy.provider && (
+                <span>
+                  · {strategy.provider}/{strategy.model}
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-        <DeleteButton
-          label={strategy.title}
-          confirmText="Delete strategy?"
-          variant="outline"
-          onDelete={deleteStrategy.bind(null, id)}
-        />
-          <Link href="/strategies" className="text-sm text-primary hover:underline">
-            ← All strategies
-          </Link>
+          <DeleteButton
+            label={strategy.title}
+            confirmText="Delete strategy?"
+            variant="outline"
+            onDelete={deleteStrategy.bind(null, id)}
+          />
         </div>
       </div>
 
@@ -97,8 +135,10 @@ export default async function StrategyDetailPage({
 
       {strategy.status === "running" && (
         <Card>
-          <CardContent className="py-4 text-sm text-muted-foreground">
-            Generating… refresh in a few seconds.
+          <CardContent className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+            <span className="size-2 animate-pulse rounded-full bg-primary" />
+            Generating — this page updates automatically, no need to refresh
+            manually. Can take a few minutes for accounts with a lot of data.
           </CardContent>
         </Card>
       )}
@@ -114,8 +154,34 @@ export default async function StrategyDetailPage({
         </Card>
       )}
 
+      {recommendations.length > 0 && (
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold">Recommendations</h2>
+          <div className="inline-flex rounded-md border p-0.5">
+            {REC_TABS.map((t) => (
+              <Link
+                key={t.value}
+                href={
+                  t.value === "all"
+                    ? `/strategies/${id}`
+                    : `/strategies/${id}?rec=${t.value}`
+                }
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs transition-colors",
+                  recFilter === t.value
+                    ? "bg-primary text-primary-foreground font-medium"
+                    : "text-muted-foreground hover:bg-accent"
+                )}
+              >
+                {t.label} ({t.count})
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
-        {(recommendations ?? []).map((rec) => {
+        {visibleRecs.map((rec) => {
           const suggestion = (
             rec.suggested_action as { create_item?: SuggestedCreateItem } | null
           )?.create_item;
@@ -183,12 +249,16 @@ export default async function StrategyDetailPage({
             </Card>
           );
         })}
-        {(recommendations ?? []).length === 0 &&
-          strategy.status === "completed" && (
-            <p className="text-sm text-muted-foreground">
-              No recommendations were produced.
-            </p>
-          )}
+        {visibleRecs.length === 0 && recommendations.length > 0 && (
+          <p className="text-sm text-muted-foreground">
+            No {recFilter === "all" ? "" : recFilter} recommendations.
+          </p>
+        )}
+        {recommendations.length === 0 && strategy.status === "completed" && (
+          <p className="text-sm text-muted-foreground">
+            No recommendations were produced.
+          </p>
+        )}
       </div>
     </div>
   );

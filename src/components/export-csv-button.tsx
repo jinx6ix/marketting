@@ -3,37 +3,32 @@
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-interface ExportCsvButtonProps<T extends Record<string, unknown>> {
-  filename: string;
-  data: T[];
-  columns: (keyof T)[];
-  columnLabels?: Partial<Record<keyof T, string>>;
-}
-
-/** Small "Export CSV" button — builds the file client-side, no server round trip. */
-export function ExportCsvButton<T extends Record<string, unknown>>({
+/**
+ * Takes fully pre-computed, plain data only (strings/numbers) — no
+ * value-extractor functions. This is a Client Component, and functions
+ * can't be passed as props from a Server Component across that boundary
+ * (React throws "Functions cannot be passed directly to Client Components").
+ * Do the row -> cell-values mapping in the Server Component that renders
+ * this, then hand over the finished 2D array.
+ */
+export function ExportCsvButton({
   filename,
-  data,
-  columns,
-  columnLabels,
-}: ExportCsvButtonProps<T>) {
+  headers,
+  rows,
+}: {
+  filename: string;
+  headers: string[];
+  rows: (string | number)[][];
+}) {
   function download() {
-    const escape = (v: unknown) => {
-      const s = String(v !== undefined && v !== null ? v : "");
+    const escape = (v: string | number) => {
+      const s = String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-
-    const headers = columns.map((col) =>
-      escape(columnLabels?.[col] ?? String(col))
-    );
-
     const lines = [
-      headers.join(","),
-      ...data.map((row) =>
-        columns.map((col) => escape(row[col])).join(",")
-      ),
+      headers.map(escape).join(","),
+      ...rows.map((row) => row.map(escape).join(",")),
     ];
-
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -49,7 +44,7 @@ export function ExportCsvButton<T extends Record<string, unknown>>({
       variant="outline"
       size="sm"
       onClick={download}
-      disabled={data.length === 0}
+      disabled={rows.length === 0}
       className="gap-1.5"
     >
       <Download className="size-3.5" />

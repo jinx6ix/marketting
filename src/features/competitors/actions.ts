@@ -120,6 +120,32 @@ export async function deleteCompetitor(id: string): Promise<ActionResult> {
   redirect("/competitors");
 }
 
+/**
+ * Archive/reactivate rather than delete — keeps all history (snapshots,
+ * posts) intact. `active` also gates whether a competitor is included in
+ * AI gap-analysis generation (see lib/jobs/strategy.ts), so archiving one
+ * you've stopped caring about both declutters the list and keeps it out of
+ * future strategy runs without losing anything.
+ */
+export async function setCompetitorActive(
+  id: string,
+  active: boolean
+): Promise<ActionResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const { error } = await supabase
+    .from("competitors")
+    .update({ active })
+    .eq("id", id)
+    .eq("org_id", orgId);
+  if (error) return { error: error.message };
+
+  revalidatePath("/competitors");
+  revalidatePath(`/competitors/${id}`);
+  return {};
+}
+
 const manualSnapshotSchema = z.object({
   competitor_account_id: z.string().uuid(),
   followers: z.coerce.number().int().min(0).optional(),

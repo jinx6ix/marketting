@@ -4,11 +4,38 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getSessionContext } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { syncAccountMetrics } from "@/lib/jobs/metrics";
 import type { OrgRole } from "@/types/database";
 
 export interface ActionResult {
   error?: string;
   message?: string;
+}
+
+/**
+ * "Sync now" — fetches fresh account metrics for one account immediately
+ * instead of waiting for the next scheduled metrics job run (every 30 min).
+ * Any org member can trigger it; it's read-only against the platform (just
+ * a metrics fetch) and scoped to a single account already visible to them.
+ */
+export async function syncAccountNow(accountId: string): Promise<ActionResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+
+  const { data: account } = await supabase
+    .from("social_accounts")
+    .select("id")
+    .eq("id", accountId)
+    .eq("org_id", orgId)
+    .single();
+  if (!account) return { error: "Account not found" };
+
+  const result = await syncAccountMetrics(accountId);
+  if (!result.ok) return { error: result.error ?? "Sync failed" };
+
+  revalidatePath("/settings/accounts");
+  revalidatePath("/analytics");
+  return { message: "Synced" };
 }
 
 const ASSIGNABLE_ROLES = ["admin", "editor", "viewer"] as const;

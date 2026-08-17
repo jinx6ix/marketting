@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Trash2 } from "lucide-react";
+import { Trash2, Archive, ArchiveRestore } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select";
 import {
   addManualSnapshot,
   deleteCompetitor,
+  setCompetitorActive,
 } from "@/features/competitors/actions";
 
 /** Manual snapshot entry for platforms without public APIs. */
@@ -105,6 +106,34 @@ export function ManualSnapshotForm({
         {pending ? "Saving…" : "Record snapshot"}
       </Button>
     </div>
+  );
+}
+
+export function ArchiveCompetitorButton({
+  id,
+  active,
+}: {
+  id: string;
+  active: boolean;
+}) {
+  const [pending, startTransition] = useTransition();
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={pending}
+      onClick={() => startTransition(() => setCompetitorActive(id, !active).then(() => {}))}
+    >
+      {active ? (
+        <>
+          <Archive /> Archive
+        </>
+      ) : (
+        <>
+          <ArchiveRestore /> Reactivate
+        </>
+      )}
+    </Button>
   );
 }
 

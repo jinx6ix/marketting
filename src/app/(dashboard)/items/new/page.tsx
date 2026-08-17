@@ -6,8 +6,13 @@ import type { Platform } from "@/types/database";
 
 export const metadata = { title: "New Item" };
 
-export default async function NewItemPage() {
+export default async function NewItemPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ date?: string }>;
+}) {
   const { orgId, supabase } = await getSessionContext();
+  const { date } = await searchParams;
 
   const [{ data: accounts }, { data: campaigns }, { data: org }] =
     await Promise.all([
@@ -31,6 +36,12 @@ export default async function NewItemPage() {
     ]);
 
   const defaultHashtags = org?.default_hashtags ?? [];
+
+  // Coming from a calendar day's quick-add link (?date=yyyy-MM-dd) —
+  // prefill scheduled_at to 9am that day, in the browser's local
+  // timezone-naive format the composer's datetime-local input expects.
+  const isValidDate = date && /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const scheduledAt = isValidDate ? `${date}T09:00` : undefined;
 
   return (
     <div className="max-w-5xl space-y-4">
@@ -89,7 +100,7 @@ export default async function NewItemPage() {
           }[]
         }
         campaigns={campaigns ?? []}
-        initial={{ hashtags: defaultHashtags }}
+        initial={{ hashtags: defaultHashtags, scheduled_at: scheduledAt }}
       />
     </div>
   );

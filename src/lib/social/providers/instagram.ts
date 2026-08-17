@@ -251,7 +251,64 @@ export const instagramAdapter: SocialProviderAdapter = {
         comments_count: z.number().optional(),
       })
       .parse(await res.json());
-    return { likes: data.like_count, comments: data.comments_count, raw: data };
+
+    // Views/reach/shares/saves come from a separate insights call — Meta
+    // fully deprecated the "impressions" media metric in Graph API v22
+    // (April 2025); requesting it now errors outright rather than just
+    // returning stale data. "views" is the current replacement and covers
+    // what impressions used to mean for both photo and video content.
+    // Best-effort: not every media type/age supports every metric here, so
+    // a failure must not fail the whole fetch — likes/comments above still
+    // land either way.
+    let views: number | undefined;
+    let reach: number | undefined;
+    let shares: number | undefined;
+    let saved: number | undefined;
+    try {
+      const insightsRes = await socialFetch(
+        "instagram",
+        `${GRAPH}/${externalPostId}/insights?metric=views,reach,saved,shares&access_token=${encodeURIComponent(
+          tokens.accessToken
+        )}`
+      );
+      const insights = z
+        .object({
+          data: z
+            .array(
+              z.object({
+                name: z.string(),
+                values: z.array(z.object({ value: z.number().optional() })).optional(),
+                total_value: z.object({ value: z.number().optional() }).optional(),
+              })
+            )
+            .optional(),
+        })
+        .parse(await insightsRes.json());
+      for (const metric of insights.data ?? []) {
+        // Media-level insights are lifetime totals, not day-by-day time
+        // series (unlike the account-level "reach" call above) — modern
+        // API versions return total_value, older ones return values[0].
+        const value = metric.total_value?.value ?? metric.values?.[0]?.value;
+        if (value == null) continue;
+        if (metric.name === "views") views = value;
+        else if (metric.name === "reach") reach = value;
+        else if (metric.name === "shares") shares = value;
+        else if (metric.name === "saved") saved = value;
+      }
+    } catch {
+      // Insights unavailable for this media (age, type, or permission
+      // scope) — non-fatal, we still have likes/comments.
+    }
+
+    return {
+      likes: data.like_count,
+      comments: data.comments_count,
+      shares,
+      saves: saved,
+      impressions: views, // stored under "impressions" for schema continuity — see note above
+      reach,
+      raw: data,
+    };
   },
 
   async fetchMentions(tokens, account, since): Promise<FetchedMention[]> {

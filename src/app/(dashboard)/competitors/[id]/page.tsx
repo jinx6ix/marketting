@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ArrowLeft, AlertCircle } from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
 import {
   Card,
@@ -23,8 +24,9 @@ import { PLATFORM_LABELS } from "@/components/charts/theme";
 import {
   ManualSnapshotForm,
   DeleteCompetitorButton,
+  ArchiveCompetitorButton,
 } from "@/features/competitors/components/snapshot-form";
-import { daysAgoIso, formatNumber, relativeTime } from "@/lib/utils";
+import { daysAgoIso, formatNumber, relativeTime, isStale, cn } from "@/lib/utils";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Competitor" };
@@ -94,6 +96,17 @@ export default async function CompetitorDetailPage({
   const latestByAccount = new Map<string, NonNullable<typeof snapshots>[number]>();
   for (const s of snapshots ?? []) latestByAccount.set(s.competitor_account_id, s);
 
+  // Per-account 30-day follower history (for the growth indicator next to
+  // each account below) — sliced from the 90-day `snapshots` already
+  // fetched rather than issuing another query.
+  const history30ByAccount = new Map<string, number[]>();
+  for (const s of snapshots ?? []) {
+    if (s.followers == null || s.captured_at < since30) continue;
+    const arr = history30ByAccount.get(s.competitor_account_id) ?? [];
+    arr.push(s.followers);
+    history30ByAccount.set(s.competitor_account_id, arr);
+  }
+
   const themFollowers = [...latestByAccount.values()].reduce(
     (s, x) => s + (x.followers ?? 0),
     0
@@ -141,22 +154,32 @@ export default async function CompetitorDetailPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">{competitor.name}</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            {competitor.destinations.map((d) => (
-              <Badge key={d} variant="outline">
-                {d}
-              </Badge>
-            ))}
+      <div>
+        <Link
+          href="/competitors"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="size-3.5" />
+          All competitors
+        </Link>
+        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">{competitor.name}</h1>
+              {!competitor.active && <Badge variant="outline">Archived</Badge>}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {competitor.destinations.map((d) => (
+                <Badge key={d} variant="outline">
+                  {d}
+                </Badge>
+              ))}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <DeleteCompetitorButton id={competitor.id} name={competitor.name} />
-          <Link href="/competitors" className="text-sm text-primary hover:underline">
-            ← All competitors
-          </Link>
+          <div className="flex items-center gap-2">
+            <ArchiveCompetitorButton id={competitor.id} active={competitor.active} />
+            <DeleteCompetitorButton id={competitor.id} name={competitor.name} />
+          </div>
         </div>
       </div>
 
@@ -205,13 +228,18 @@ export default async function CompetitorDetailPage({
           <CardContent className="space-y-2">
             {accounts.map((a) => {
               const latest = latestByAccount.get(a.id);
+              const acctHistory = history30ByAccount.get(a.id) ?? [];
+              const growth = acctHistory.length >= 2
+                ? acctHistory[acctHistory.length - 1] - acctHistory[0]
+                : null;
+              const stale = isStale(a.last_polled_at, 30);
               return (
                 <div
                   key={a.id}
                   className="flex items-center justify-between rounded-md border p-2.5 text-sm"
                 >
                   <div>
-                    <div className="font-medium">
+                    <div className="flex items-center gap-1.5 font-medium">
                       {PLATFORM_LABELS[a.platform as Platform] ?? a.platform} ·{" "}
                       {a.profile_url ? (
                         <a
@@ -225,6 +253,11 @@ export default async function CompetitorDetailPage({
                       ) : (
                         <>@{a.handle}</>
                       )}
+                      {stale && (
+                        <span title="No fresh data in over 30 hours — the competitor polling job may be stalled">
+                          <AlertCircle className="size-3.5 text-amber-500" />
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {a.last_polled_at
@@ -234,7 +267,24 @@ export default async function CompetitorDetailPage({
                   </div>
                   <div className="text-right tabular-nums">
                     {formatNumber(latest?.followers)}
-                    <div className="text-xs text-muted-foreground">followers</div>
+                    <div className="text-xs text-muted-foreground">
+                      followers
+                      {growth != null && (
+                        <span
+                          className={cn(
+                            "ml-1 font-medium",
+                            growth > 0
+                              ? "text-success"
+                              : growth < 0
+                                ? "text-destructive"
+                                : ""
+                          )}
+                        >
+                          ({growth > 0 ? "+" : ""}
+                          {formatNumber(growth)}/30d)
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

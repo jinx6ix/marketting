@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { StatTile } from "@/components/charts/stat-tile";
 import {
   MentionActions,
   MarkAllReadButton,
@@ -16,7 +17,7 @@ import {
 import { KeywordsPanel } from "@/features/inbox/components/keywords-panel";
 import { RealtimeRefresher } from "@/components/realtime-refresher";
 import { PLATFORM_LABELS } from "@/components/charts/theme";
-import { cn, relativeTime } from "@/lib/utils";
+import { cn, daysAgoIso, relativeTime } from "@/lib/utils";
 import type { MentionKind, Platform, Sentiment } from "@/types/database";
 
 export const metadata = { title: "Inbox" };
@@ -27,6 +28,16 @@ const SENTIMENT_VARIANT: Record<Sentiment, "success" | "secondary" | "destructiv
   negative: "destructive",
 };
 
+const ALL_PLATFORMS: Platform[] = [
+  "facebook",
+  "instagram",
+  "x",
+  "tiktok",
+  "youtube",
+  "linkedin",
+  "pinterest",
+];
+
 const PAGE_SIZE = 25;
 
 export default async function InboxPage({
@@ -36,11 +47,12 @@ export default async function InboxPage({
     filter?: string;
     kind?: string;
     platform?: string;
+    sentiment?: string;
     page?: string;
   }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
-  const { filter, kind, platform, page: pageParam } = await searchParams;
+  const { filter, kind, platform, sentiment, page: pageParam } = await searchParams;
   const page = Math.max(1, Number(pageParam) || 1);
   const from = (page - 1) * PAGE_SIZE;
 
@@ -54,27 +66,46 @@ export default async function InboxPage({
   if (filter === "unreplied") query = query.eq("replied", false);
   if (kind) query = query.eq("kind", kind as MentionKind);
   if (platform) query = query.eq("platform", platform as Platform);
+  if (sentiment) query = query.eq("sentiment", sentiment as Sentiment);
 
-  const [{ data: mentions, count: totalCount }, { data: keywords }, { count: unreadCount }] =
-    await Promise.all([
-      query,
-      supabase
-        .from("tracked_keywords")
-        .select("*")
-        .eq("org_id", orgId!)
-        .order("created_at"),
-      supabase
-        .from("mentions")
-        .select("id", { count: "exact", head: true })
-        .eq("org_id", orgId!)
-        .eq("is_read", false),
-    ]);
+  const since30 = daysAgoIso(30);
+
+  const [
+    { data: mentions, count: totalCount },
+    { data: keywords },
+    { count: unreadCount },
+    { count: unrepliedCount },
+    { count: last30Count },
+  ] = await Promise.all([
+    query,
+    supabase
+      .from("tracked_keywords")
+      .select("*")
+      .eq("org_id", orgId!)
+      .order("created_at"),
+    supabase
+      .from("mentions")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId!)
+      .eq("is_read", false),
+    supabase
+      .from("mentions")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId!)
+      .eq("replied", false),
+    supabase
+      .from("mentions")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId!)
+      .gte("occurred_at", since30),
+  ]);
 
   const withParam = (key: string, value?: string) => {
     const params = new URLSearchParams();
     if (filter) params.set("filter", filter);
     if (kind) params.set("kind", kind);
     if (platform) params.set("platform", platform);
+    if (sentiment) params.set("sentiment", sentiment);
     if (value) params.set(key, value);
     else params.delete(key);
     const s = params.toString();
@@ -84,16 +115,22 @@ export default async function InboxPage({
   const totalPages = Math.max(1, Math.ceil((totalCount ?? 0) / PAGE_SIZE));
 
   const FILTERS = [
-    { label: "All", href: withParam("filter") },
-    { label: "Unread", href: withParam("filter", "unread") },
-    { label: "Unreplied", href: withParam("filter", "unreplied") },
+    { label: "All", value: undefined, href: withParam("filter") },
+    { label: "Unread", value: "unread", href: withParam("filter", "unread") },
+    { label: "Unreplied", value: "unreplied", href: withParam("filter", "unreplied") },
   ];
   const KINDS = [
-    { label: "Any kind", href: withParam("kind") },
-    { label: "Mentions", href: withParam("kind", "mention") },
-    { label: "Comments", href: withParam("kind", "comment") },
-    { label: "Keywords", href: withParam("kind", "keyword_match") },
-    { label: "Reviews", href: withParam("kind", "review") },
+    { label: "Any kind", value: undefined, href: withParam("kind") },
+    { label: "Mentions", value: "mention", href: withParam("kind", "mention") },
+    { label: "Comments", value: "comment", href: withParam("kind", "comment") },
+    { label: "Keywords", value: "keyword_match", href: withParam("kind", "keyword_match") },
+    { label: "Reviews", value: "review", href: withParam("kind", "review") },
+  ];
+  const SENTIMENTS = [
+    { label: "Any sentiment", value: undefined, href: withParam("sentiment") },
+    { label: "Positive", value: "positive", href: withParam("sentiment", "positive") },
+    { label: "Neutral", value: "neutral", href: withParam("sentiment", "neutral") },
+    { label: "Negative", value: "negative", href: withParam("sentiment", "negative") },
   ];
 
   return (
@@ -101,36 +138,84 @@ export default async function InboxPage({
       <RealtimeRefresher table="mentions" orgId={orgId!} />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Inbox</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Inbox</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            {unreadCount ?? 0} unread
+            Mentions, comments, keyword matches, and reviews collected across
+            connected platforms
           </p>
         </div>
         <MarkAllReadButton disabled={(unreadCount ?? 0) === 0} />
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatTile label="Unread" value={unreadCount ?? 0} format="raw" />
+        <StatTile label="Unreplied" value={unrepliedCount ?? 0} format="raw" />
+        <StatTile label="Last 30 days" value={last30Count ?? 0} format="raw" />
+      </div>
+
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="space-y-4 xl:col-span-2">
-          <div className="flex flex-wrap gap-2">
-            {FILTERS.map((f) => (
-              <Link
-                key={f.label}
-                href={f.href}
-                className="rounded-md border px-3 py-1 text-xs hover:bg-accent"
-              >
-                {f.label}
-              </Link>
-            ))}
-            <span className="mx-1 border-l" />
-            {KINDS.map((f) => (
-              <Link
-                key={f.label}
-                href={f.href}
-                className="rounded-md border px-3 py-1 text-xs hover:bg-accent"
-              >
-                {f.label}
-              </Link>
-            ))}
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {FILTERS.map((f) => (
+                <Link
+                  key={f.label}
+                  href={f.href}
+                  className={cn(
+                    "rounded-md border px-3 py-1 text-xs hover:bg-accent",
+                    (f.value ?? undefined) === (filter ?? undefined)
+                      ? "border-primary bg-primary/10 font-medium"
+                      : undefined
+                  )}
+                >
+                  {f.label}
+                </Link>
+              ))}
+              <span className="mx-1 border-l" />
+              {KINDS.map((f) => (
+                <Link
+                  key={f.label}
+                  href={f.href}
+                  className={cn(
+                    "rounded-md border px-3 py-1 text-xs hover:bg-accent",
+                    (f.value ?? undefined) === (kind ?? undefined)
+                      ? "border-primary bg-primary/10 font-medium"
+                      : undefined
+                  )}
+                >
+                  {f.label}
+                </Link>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {SENTIMENTS.map((f) => (
+                <Link
+                  key={f.label}
+                  href={f.href}
+                  className={cn(
+                    "rounded-md border px-3 py-1 text-xs hover:bg-accent",
+                    (f.value ?? undefined) === (sentiment ?? undefined)
+                      ? "border-primary bg-primary/10 font-medium"
+                      : undefined
+                  )}
+                >
+                  {f.label}
+                </Link>
+              ))}
+              <span className="mx-1 border-l" />
+              {ALL_PLATFORMS.map((p) => (
+                <Link
+                  key={p}
+                  href={platform === p ? withParam("platform") : withParam("platform", p)}
+                  className={cn(
+                    "rounded-md border px-3 py-1 text-xs hover:bg-accent",
+                    platform === p ? "border-primary bg-primary/10 font-medium" : undefined
+                  )}
+                >
+                  {PLATFORM_LABELS[p]}
+                </Link>
+              ))}
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -207,10 +292,13 @@ export default async function InboxPage({
               </Card>
             ))}
             {(mentions ?? []).length === 0 && (
-              <p className="py-12 text-center text-sm text-muted-foreground">
-                No mentions match this filter. Mentions are collected by the
-                monitoring job from connected platforms and tracked keywords.
-              </p>
+              <Card>
+                <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                  No mentions match this filter. Mentions are collected by the
+                  monitoring job from connected platforms and tracked
+                  keywords.
+                </CardContent>
+              </Card>
             )}
           </div>
 
