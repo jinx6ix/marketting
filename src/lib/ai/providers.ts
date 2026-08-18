@@ -20,7 +20,10 @@ export const AI_PROVIDERS: Record<AiProviderName, AiProviderConfig> = {
     name: "groq",
     baseURL: "https://api.groq.com/openai/v1",
     apiKeyEnv: "GROQ_API_KEY",
-    defaultModel: "llama-3.3-70b-versatile",
+    // llama-3.3-70b-versatile was decommissioned by Groq on Aug 16, 2026.
+    // openai/gpt-oss-120b is their recommended replacement — same free
+    // tier (1,000 req/day), same OpenAI-compatible chat completions shape.
+    defaultModel: "openai/gpt-oss-120b",
   },
   openrouter: {
     name: "openrouter",
