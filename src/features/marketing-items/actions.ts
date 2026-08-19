@@ -38,15 +38,16 @@ export interface ActionResult {
  * first; any default not already present (case-insensitively) is appended.
  * Capped at 30 to match itemFormSchema's hashtags limit.
  */
-async function withDefaultHashtags(
-  supabase: Awaited<ReturnType<typeof getSessionContext>>["supabase"],
-  orgId: string,
-  hashtags: string[]
-): Promise<string[]> {
-  // Dedupe the incoming list against itself first (case-insensitive,
-  // keeping the first-seen casing) — defense in depth in case a duplicate
-  // ever reaches this action some other way than the composer UI, e.g. a
-  // direct API call.
+/**
+ * Dedupe `hashtags` against itself (case-insensitive, first-seen casing
+ * wins) — defense in depth in case a duplicate ever reaches this action
+ * some other way than the composer UI — then append any org `defaults`
+ * not already present. Capped at 30 to match the schema's hashtags limit.
+ * Pure/no DB access, so callers that already have `defaults` from a query
+ * they ran concurrently for another reason (see updateItem) can call this
+ * directly instead of paying for a second sequential fetch.
+ */
+function mergeWithDefaults(hashtags: string[], defaults: string[]): string[] {
   const seen = new Set<string>();
   const deduped: string[] = [];
   for (const tag of hashtags) {
@@ -55,13 +56,6 @@ async function withDefaultHashtags(
     seen.add(key);
     deduped.push(tag);
   }
-
-  const { data: org } = await supabase
-    .from("organizations")
-    .select("default_hashtags")
-    .eq("id", orgId)
-    .single();
-  const defaults = org?.default_hashtags ?? [];
   if (defaults.length === 0) return deduped;
 
   const merged = [...deduped];
@@ -73,6 +67,19 @@ async function withDefaultHashtags(
     }
   }
   return merged.slice(0, 30);
+}
+
+async function withDefaultHashtags(
+  supabase: Awaited<ReturnType<typeof getSessionContext>>["supabase"],
+  orgId: string,
+  hashtags: string[]
+): Promise<string[]> {
+  const { data: org } = await supabase
+    .from("organizations")
+    .select("default_hashtags")
+    .eq("id", orgId)
+    .single();
+  return mergeWithDefaults(hashtags, org?.default_hashtags ?? []);
 }
 
 export interface BackfillResult extends ActionResult {
@@ -192,19 +199,20 @@ export async function updateItem(
   const youtubeError = validateYoutubeMedia(v.targets, v.media);
   if (youtubeError) return { error: youtubeError };
 
-  // Only draft/scheduled/failed items can be edited.
-  const { data: existing } = await supabase
-    .from("marketing_items")
-    .select("status")
-    .eq("id", id)
-    .single();
+  // These two reads are independent — run them concurrently instead of
+  // one after the other (each Supabase round trip adds real latency,
+  // especially from a distant region/cold start).
+  const [{ data: existing }, { data: org }] = await Promise.all([
+    supabase.from("marketing_items").select("status").eq("id", id).single(),
+    supabase.from("organizations").select("default_hashtags").eq("id", orgId).single(),
+  ]);
   if (!existing) return { error: "Item not found" };
   if (!["draft", "scheduled", "failed"].includes(existing.status)) {
     return { error: `Cannot edit an item with status "${existing.status}"` };
   }
 
   const status = v.scheduled_at ? "scheduled" : "draft";
-  const hashtags = await withDefaultHashtags(supabase, orgId, v.hashtags);
+  const hashtags = mergeWithDefaults(v.hashtags, org?.default_hashtags ?? []);
 
   const { error } = await supabase
     .from("marketing_items")

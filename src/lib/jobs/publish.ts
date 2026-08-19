@@ -1,10 +1,18 @@
 import "server-only";
+
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAdapter } from "@/lib/social/registry";
 import { getAccountTokens } from "@/lib/social/accounts";
-import { SocialApiError, type PublishPayload } from "@/lib/social/types";
+import {
+  SocialApiError,
+  type PublishPayload,
+} from "@/lib/social/types";
 import { formatForPlatform } from "@/lib/social/format";
-import { nextRetryAt, tryAcquire, markRateLimited } from "./rate-limit";
+import {
+  nextRetryAt,
+  tryAcquire,
+  markRateLimited,
+} from "./rate-limit";
 import { runJob } from "./runner";
 import { rollupItemStatus } from "./item-rollup";
 import type { Platform } from "@/types/database";
@@ -16,79 +24,340 @@ interface MediaEntry {
 }
 
 /**
- * Publish job: claims due post_targets, publishes via adapters,
- * handles retries, and rolls up marketing_items status.
+ * Publish job:
+ *
+ * 1. Finds pending/queued post targets.
+ * 2. Filters them to targets whose parent marketing item is due.
+ * 3. Acquires a platform rate-limit slot.
+ * 4. Claims the target using an optimistic database lock.
+ * 5. Loads the connected social account and tokens.
+ * 6. Publishes through the platform adapter.
+ * 7. Persists the external post ID.
+ * 8. Handles retryable/non-retryable failures.
+ * 9. Rolls the parent marketing item status up.
  */
 export async function publishDue(): Promise<ReturnType<typeof runJob>> {
   return runJob("publish", async () => {
     const admin = createAdminClient();
-    const nowIso = new Date().toISOString();
+    const now = new Date();
+    const nowIso = now.toISOString();
 
-    // Due = parent item scheduled in the past AND target pending, or a retry due.
+    console.log("[publish] ========================================");
+    console.log("[publish] Starting publish job");
+    console.log("[publish] Current time:", nowIso);
+
+    // -----------------------------------------------------------------------
+    // 1. Find pending/queued targets that are eligible for retry.
+    // -----------------------------------------------------------------------
+
     const { data: targets, error } = await admin
       .from("post_targets")
-      .select("*, marketing_items!inner(id, status, scheduled_at, title, body, media, hashtags)")
+      .select(
+        "*, marketing_items!inner(id, status, scheduled_at, title, body, media, hashtags)"
+      )
       .in("status", ["pending", "queued"])
       .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
       .limit(20);
-    if (error) throw new Error(error.message);
 
-    const due = (targets ?? []).filter((t) => {
-      const item = t.marketing_items as unknown as {
+    if (error) {
+      console.error("[publish] TARGET QUERY ERROR:", error);
+      throw new Error(error.message);
+    }
+
+    console.log("[publish] Targets returned from database:", targets?.length ?? 0);
+
+    // -----------------------------------------------------------------------
+    // 2. Diagnostic output for every target returned by the database.
+    // -----------------------------------------------------------------------
+
+    for (const target of targets ?? []) {
+      const item = target.marketing_items as unknown as {
+        id: string;
+        status: string;
+        scheduled_at: string | null;
+        title: string;
+      };
+
+      console.log("[publish] DATABASE TARGET:", {
+        targetId: target.id,
+        itemId: target.item_id,
+        platform: target.platform,
+        targetStatus: target.status,
+        retryCount: target.retry_count,
+        nextRetryAt: target.next_retry_at,
+        itemStatus: item?.status,
+        scheduledAt: item?.scheduled_at,
+        title: item?.title,
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Filter targets to items that are actually due.
+    // -----------------------------------------------------------------------
+
+    const due = (targets ?? []).filter((target) => {
+      const item = target.marketing_items as unknown as {
+        id: string;
         status: string;
         scheduled_at: string | null;
       };
-      return (
-        (item.status === "scheduled" || item.status === "publishing") &&
-        item.scheduled_at &&
-        new Date(item.scheduled_at) <= new Date()
-      );
+
+      const itemStatusIsValid =
+        item.status === "scheduled" ||
+        item.status === "publishing";
+
+      const hasScheduledAt = Boolean(item.scheduled_at);
+
+      const scheduledTimeIsDue =
+        hasScheduledAt &&
+        new Date(item.scheduled_at as string).getTime() <= now.getTime();
+
+      const isDue =
+        itemStatusIsValid &&
+        hasScheduledAt &&
+        scheduledTimeIsDue;
+
+      console.log("[publish] DUE CHECK:", {
+        targetId: target.id,
+        itemId: target.item_id,
+        platform: target.platform,
+        targetStatus: target.status,
+        itemStatus: item.status,
+        scheduledAt: item.scheduled_at,
+        itemStatusIsValid,
+        hasScheduledAt,
+        scheduledTimeIsDue,
+        isDue,
+      });
+
+      return isDue;
     });
+
+    console.log("[publish] Due targets:", due.length);
+
+    if (due.length === 0) {
+      console.log("[publish] No due targets found.");
+      console.log("[publish] ========================================");
+      return 0;
+    }
 
     let processed = 0;
     const touchedItems = new Set<string>();
 
+    // -----------------------------------------------------------------------
+    // 4. Process each due target.
+    // -----------------------------------------------------------------------
+
     for (const target of due) {
       const platform = target.platform as Platform;
-      if (!(await tryAcquire(platform))) continue;
 
-      // claim: pending/queued -> publishing (optimistic lock via status filter)
-      const { data: claimed } = await admin
+      console.log("[publish] ----------------------------------------");
+      console.log("[publish] PROCESSING TARGET:", {
+        targetId: target.id,
+        itemId: target.item_id,
+        platform,
+        status: target.status,
+      });
+
+      // ---------------------------------------------------------------------
+      // 4A. Rate limit
+      // ---------------------------------------------------------------------
+
+      let acquired = false;
+
+      try {
+        acquired = await tryAcquire(platform);
+      } catch (error) {
+        console.error("[publish] RATE LIMIT ERROR:", {
+          targetId: target.id,
+          platform,
+          error,
+        });
+
+        // Rate limiter is intended to fail open, but keep this defensive.
+        acquired = true;
+      }
+
+      console.log("[publish] RATE LIMIT RESULT:", {
+        targetId: target.id,
+        platform,
+        acquired,
+      });
+
+      if (!acquired) {
+        console.log("[publish] SKIPPED - RATE LIMITED:", {
+          targetId: target.id,
+          platform,
+        });
+
+        continue;
+      }
+
+      // ---------------------------------------------------------------------
+      // 4B. Claim target
+      // ---------------------------------------------------------------------
+
+      console.log("[publish] Attempting to claim target:", {
+        targetId: target.id,
+        platform,
+        currentStatus: target.status,
+      });
+
+      const { data: claimed, error: claimError } = await admin
         .from("post_targets")
-        .update({ status: "publishing" })
+        .update({
+          status: "publishing",
+        })
         .eq("id", target.id)
         .in("status", ["pending", "queued"])
-        .select("id")
+        .select("id, status")
         .single();
-      if (!claimed) continue; // another worker claimed it
+
+      console.log("[publish] CLAIM RESULT:", {
+        targetId: target.id,
+        platform,
+        claimed,
+        claimError,
+      });
+
+      if (claimError) {
+        console.error("[publish] CLAIM DATABASE ERROR:", {
+          targetId: target.id,
+          platform,
+          error: claimError.message,
+          details: claimError.details,
+          hint: claimError.hint,
+          code: claimError.code,
+        });
+
+        continue;
+      }
+
+      if (!claimed) {
+        console.log(
+          "[publish] SKIPPED - TARGET WAS NOT CLAIMED:",
+          {
+            targetId: target.id,
+            platform,
+          }
+        );
+
+        continue;
+      }
+
+      console.log("[publish] TARGET CLAIMED:", {
+        targetId: target.id,
+        platform,
+      });
 
       touchedItems.add(target.item_id);
-      await admin
+
+      // ---------------------------------------------------------------------
+      // 4C. Move parent marketing item into publishing state.
+      // ---------------------------------------------------------------------
+
+      const { error: itemStatusError } = await admin
         .from("marketing_items")
-        .update({ status: "publishing" })
+        .update({
+          status: "publishing",
+        })
         .eq("id", target.item_id)
         .eq("status", "scheduled");
 
-      // Idempotency: a previous attempt that crashed between the platform
-      // call and the DB write leaves external_post_id set. Never re-post.
-      if (target.external_post_id) {
-        await finalizeTarget(admin, target.id, {
-          status: "published",
-          external_post_id: target.external_post_id,
-          external_url: target.external_url ?? null,
-          published_at: target.published_at ?? new Date().toISOString(),
-          error: null,
+      if (itemStatusError) {
+        console.error("[publish] ITEM STATUS UPDATE ERROR:", {
+          targetId: target.id,
+          itemId: target.item_id,
+          platform,
+          error: itemStatusError,
         });
-        processed++;
+      }
+
+      // ---------------------------------------------------------------------
+      // 4D. Idempotency check.
+      //
+      // If the platform post was already created but our DB write previously
+      // failed, don't create another post.
+      // ---------------------------------------------------------------------
+
+      if (target.external_post_id) {
+        console.log("[publish] EXISTING EXTERNAL POST FOUND:", {
+          targetId: target.id,
+          platform,
+          externalPostId: target.external_post_id,
+        });
+
+        try {
+          await finalizeTarget(admin, target.id, {
+            status: "published",
+            external_post_id: target.external_post_id,
+            external_url: target.external_url ?? null,
+            published_at:
+              target.published_at ?? new Date().toISOString(),
+            error: null,
+          });
+
+          processed++;
+
+          console.log("[publish] EXISTING POST FINALIZED:", {
+            targetId: target.id,
+            platform,
+          });
+        } catch (error) {
+          console.error("[publish] FINALIZE EXISTING POST ERROR:", {
+            targetId: target.id,
+            platform,
+            error,
+          });
+        }
+
         continue;
       }
 
       let published = false;
+
       try {
+        // -------------------------------------------------------------------
+        // 4E. Load social account and tokens.
+        // -------------------------------------------------------------------
+
+        console.log("[publish] Loading account tokens:", {
+          targetId: target.id,
+          platform,
+          socialAccountId: target.social_account_id,
+        });
+
         const { account, tokens } = await getAccountTokens(
           target.social_account_id
         );
+
+        console.log("[publish] Account loaded:", {
+          targetId: target.id,
+          platform,
+          accountId: target.social_account_id,
+          accountPlatform: account?.platform,
+        });
+
+        // -------------------------------------------------------------------
+        // 4F. Load adapter.
+        // -------------------------------------------------------------------
+
+        console.log("[publish] Loading adapter:", {
+          targetId: target.id,
+          platform,
+        });
+
         const adapter = getAdapter(platform);
+
+        console.log("[publish] Adapter loaded:", {
+          targetId: target.id,
+          platform,
+          adapterFound: Boolean(adapter),
+        });
+
+        // -------------------------------------------------------------------
+        // 4G. Get marketing item data.
+        // -------------------------------------------------------------------
 
         const item = target.marketing_items as unknown as {
           title: string;
@@ -97,15 +366,37 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
           hashtags: string[];
         };
 
+        console.log("[publish] Item data:", {
+          targetId: target.id,
+          platform,
+          title: item.title,
+          bodyLength: item.body?.length ?? 0,
+          mediaCount: item.media?.length ?? 0,
+          hashtagCount: item.hashtags?.length ?? 0,
+        });
+
+        // -------------------------------------------------------------------
+        // 4H. Resolve media.
+        // -------------------------------------------------------------------
+
         const mediaSource =
-          (target.variant_media as MediaEntry[] | null) ?? item.media ?? [];
+          (target.variant_media as MediaEntry[] | null) ??
+          item.media ??
+          [];
+
         const mediaType = pickMediaType(mediaSource);
 
-        // YouTube publishing is video-only. This is also enforced at
-        // create/update time in features/marketing-items/actions.ts, but
-        // media can change after an item is scheduled (edit, or a variant
-        // override), so check again right before we'd otherwise try to
-        // upload an image as a "video" and get a confusing platform error.
+        console.log("[publish] MEDIA:", {
+          targetId: target.id,
+          platform,
+          mediaCount: mediaSource.length,
+          mediaType,
+        });
+
+        // -------------------------------------------------------------------
+        // YouTube validation.
+        // -------------------------------------------------------------------
+
         if (platform === "youtube" && mediaType !== "video") {
           throw new SocialApiError(
             "youtube",
@@ -117,13 +408,33 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
         const mediaUrls = await resolveMediaUrls(mediaSource);
 
+        console.log("[publish] MEDIA URLS RESOLVED:", {
+          targetId: target.id,
+          platform,
+          mediaUrlCount: mediaUrls.length,
+        });
+
+        // -------------------------------------------------------------------
+        // 4I. Format content for the platform.
+        // -------------------------------------------------------------------
+
         const formatted = target.variant_body
-          ? { text: target.variant_body, title: item.title }
+          ? {
+              text: target.variant_body,
+              title: item.title,
+            }
           : formatForPlatform(platform, {
               title: item.title,
               body: item.body,
               hashtags: item.hashtags ?? [],
             });
+
+        console.log("[publish] CONTENT FORMATTED:", {
+          targetId: target.id,
+          platform,
+          textLength: formatted.text?.length ?? 0,
+          title: formatted.title,
+        });
 
         const payload: PublishPayload = {
           text: formatted.text,
@@ -131,11 +442,37 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
           mediaUrls,
           mediaType,
         };
-        const result = await adapter.publish(tokens, account, payload);
+
+        console.log("[publish] CALLING PLATFORM ADAPTER:", {
+          targetId: target.id,
+          platform,
+          mediaType,
+          mediaUrlCount: mediaUrls.length,
+        });
+
+        // -------------------------------------------------------------------
+        // 4J. Actual social platform API call.
+        // -------------------------------------------------------------------
+
+        const result = await adapter.publish(
+          tokens,
+          account,
+          payload
+        );
+
         published = true;
 
-        // The platform accepted the post: this write MUST land, or a retry
-        // would double-post. Retry the update a few times before giving up.
+        console.log("[publish] PLATFORM PUBLISH SUCCESS:", {
+          targetId: target.id,
+          platform,
+          externalPostId: result.externalPostId,
+          externalUrl: result.externalUrl,
+        });
+
+        // -------------------------------------------------------------------
+        // 4K. Persist successful publication.
+        // -------------------------------------------------------------------
+
         await finalizeTarget(admin, target.id, {
           status: "published",
           external_post_id: result.externalPostId,
@@ -143,45 +480,146 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
           published_at: new Date().toISOString(),
           error: null,
         });
-        processed++;
-      } catch (e) {
-        // If the platform accepted but the finalize write failed after
-        // retries, do NOT reset to pending — that would double-post. Leave
-        // the target in `publishing` for the stale reaper / operator.
-        if (published) continue;
 
-        const message = e instanceof Error ? e.message : String(e);
-        const retryable = e instanceof SocialApiError ? e.retryable : true;
-        if (e instanceof SocialApiError && e.retryAfterMs) {
-          await markRateLimited(platform, e.retryAfterMs);
+        processed++;
+
+        console.log("[publish] TARGET FINALIZED:", {
+          targetId: target.id,
+          platform,
+          processed,
+        });
+      } catch (e) {
+        // -------------------------------------------------------------------
+        // If the platform accepted the post but final DB persistence failed,
+        // DO NOT reset to pending because that could create a duplicate.
+        // -------------------------------------------------------------------
+
+        if (published) {
+          console.error(
+            "[publish] PLATFORM ACCEPTED POST BUT FINALIZE FAILED:",
+            {
+              targetId: target.id,
+              platform,
+              error: e,
+            }
+          );
+
+          continue;
         }
 
-        const retry = retryable ? nextRetryAt(target.retry_count) : null;
-        await admin
+        const message =
+          e instanceof Error ? e.message : String(e);
+
+        const retryable =
+          e instanceof SocialApiError
+            ? e.retryable
+            : true;
+
+        console.error("[publish] PUBLISH ERROR:", {
+          targetId: target.id,
+          itemId: target.item_id,
+          platform,
+          error: message,
+          retryable,
+          errorObject: e,
+        });
+
+        if (
+          e instanceof SocialApiError &&
+          e.retryAfterMs
+        ) {
+          console.log("[publish] MARKING PLATFORM RATE LIMITED:", {
+            targetId: target.id,
+            platform,
+            retryAfterMs: e.retryAfterMs,
+          });
+
+          await markRateLimited(
+            platform,
+            e.retryAfterMs
+          );
+        }
+
+        const retry = retryable
+          ? nextRetryAt(target.retry_count)
+          : null;
+
+        const newStatus = retry
+          ? "pending"
+          : "failed";
+
+        console.log("[publish] TARGET FAILURE STATE:", {
+          targetId: target.id,
+          platform,
+          newStatus,
+          retryAt: retry?.toISOString() ?? null,
+          retryCount: target.retry_count + 1,
+        });
+
+        const { error: updateError } = await admin
           .from("post_targets")
           .update({
-            status: retry ? "pending" : "failed",
+            status: newStatus,
             error: message.slice(0, 1000),
             retry_count: target.retry_count + 1,
-            next_retry_at: retry?.toISOString() ?? null,
+            next_retry_at:
+              retry?.toISOString() ?? null,
           })
           .eq("id", target.id);
+
+        if (updateError) {
+          console.error(
+            "[publish] FAILED TO SAVE TARGET ERROR:",
+            {
+              targetId: target.id,
+              platform,
+              error: updateError,
+            }
+          );
+        }
       }
     }
 
-    // Roll up item statuses
+    // -----------------------------------------------------------------------
+    // 5. Roll up marketing item statuses.
+    // -----------------------------------------------------------------------
+
+    console.log("[publish] Rolling up touched items:", {
+      count: touchedItems.size,
+      itemIds: [...touchedItems],
+    });
+
     for (const itemId of touchedItems) {
-      await rollupItemStatus(itemId);
+      try {
+        await rollupItemStatus(itemId);
+
+        console.log("[publish] ITEM ROLLUP COMPLETE:", {
+          itemId,
+        });
+      } catch (error) {
+        console.error("[publish] ITEM ROLLUP ERROR:", {
+          itemId,
+          error,
+        });
+      }
     }
+
+    console.log("[publish] JOB COMPLETE:", {
+      processed,
+      touchedItems: touchedItems.size,
+    });
+
+    console.log("[publish] ========================================");
 
     return processed;
   });
 }
 
 /**
- * Persist a target's final publish state, retrying transient DB failures.
- * Used after the platform accepted a post — losing this write would cause
- * a duplicate post on the next worker tick.
+ * Persist a target's final publish state.
+ *
+ * The platform may already have accepted the post, so this write is retried
+ * before allowing the job to give up.
  */
 async function finalizeTarget(
   admin: ReturnType<typeof createAdminClient>,
@@ -195,36 +633,90 @@ async function finalizeTarget(
   }
 ): Promise<void> {
   let lastError: string | null = null;
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const { error } = await admin
       .from("post_targets")
       .update(fields)
       .eq("id", targetId);
-    if (!error) return;
+
+    if (!error) {
+      console.log("[publish] FINALIZE DATABASE SUCCESS:", {
+        targetId,
+        attempt: attempt + 1,
+      });
+
+      return;
+    }
+
     lastError = error.message;
-    await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+
+    console.error("[publish] FINALIZE DATABASE RETRY:", {
+      targetId,
+      attempt: attempt + 1,
+      error: error.message,
+    });
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 500 * (attempt + 1))
+    );
   }
-  throw new Error(`Failed to persist published state: ${lastError}`);
+
+  throw new Error(
+    `Failed to persist published state: ${lastError}`
+  );
 }
 
-/** Turn storage paths into signed/public URLs platforms can fetch. */
-async function resolveMediaUrls(media: MediaEntry[]): Promise<string[]> {
+/**
+ * Turn storage paths into signed/public URLs that platforms can fetch.
+ */
+async function resolveMediaUrls(
+  media: MediaEntry[]
+): Promise<string[]> {
   const admin = createAdminClient();
+
   const urls: string[] = [];
-  for (const m of media) {
-    if (m.url) {
-      urls.push(m.url);
-    } else if (m.storage_path) {
-      const { data } = await admin.storage
+
+  for (const mediaEntry of media) {
+    if (mediaEntry.url) {
+      urls.push(mediaEntry.url);
+      continue;
+    }
+
+    if (mediaEntry.storage_path) {
+      const { data, error } = await admin.storage
         .from("media")
-        .createSignedUrl(m.storage_path, 60 * 60 * 24); // 24h — long enough for slow platform pulls
-      if (data?.signedUrl) urls.push(data.signedUrl);
+        .createSignedUrl(
+          mediaEntry.storage_path,
+          60 * 60 * 24
+        );
+
+      if (error) {
+        console.error("[publish] MEDIA SIGNED URL ERROR:", {
+          storagePath: mediaEntry.storage_path,
+          error,
+        });
+      }
+
+      if (data?.signedUrl) {
+        urls.push(data.signedUrl);
+      }
     }
   }
+
   return urls;
 }
 
-function pickMediaType(media: MediaEntry[]): "none" | "image" | "video" {
-  if (media.length === 0) return "none";
-  return media.some((m) => m.type === "video") ? "video" : "image";
+function pickMediaType(
+  media: MediaEntry[]
+): "none" | "image" | "video" {
+  if (media.length === 0) {
+    return "none";
+  }
+
+  return media.some(
+    (entry) => entry.type === "video"
+  )
+    ? "video"
+    : "image";
 }
