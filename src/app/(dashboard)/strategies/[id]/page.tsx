@@ -235,7 +235,9 @@ export default async function StrategyDetailPage({
                     )}
                     {suggestion.hashtags && suggestion.hashtags.length > 0 && (
                       <p className="mt-1.5 text-primary">
-                        {suggestion.hashtags.map((h) => `#${h}`).join(" ")}
+                        {suggestion.hashtags
+                          .map((h) => (h.startsWith("#") ? h : `#${h}`))
+                          .join(" ")}
                       </p>
                     )}
                   </div>

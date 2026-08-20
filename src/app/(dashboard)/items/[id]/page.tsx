@@ -167,7 +167,9 @@ export default async function ItemDetailPage({
           <p className="whitespace-pre-wrap break-words text-sm">{item.body}</p>
           {item.hashtags.length > 0 && (
             <p className="mt-3 break-words text-sm text-primary">
-              {item.hashtags.map((h) => `#${h}`).join(" ")}
+              {item.hashtags
+                .map((h) => (h.startsWith("#") ? h : `#${h}`))
+                .join(" ")}
             </p>
           )}
         </CardContent>

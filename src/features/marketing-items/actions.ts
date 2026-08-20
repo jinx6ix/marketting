@@ -48,9 +48,16 @@ export interface ActionResult {
  * directly instead of paying for a second sequential fetch.
  */
 function mergeWithDefaults(hashtags: string[], defaults: string[]): string[] {
+  // Hashtags are stored bare (no leading "#") everywhere in this app —
+  // "#" is only ever added at final display/publish time. Strip defensively
+  // here regardless of source, so a stray "#" (e.g. an org's
+  // default_hashtags saved before this was fixed at the source) can never
+  // reach an item's own hashtags array and double up later.
+  const clean = (list: string[]) => list.map((h) => h.replace(/^#+/, ""));
+
   const seen = new Set<string>();
   const deduped: string[] = [];
-  for (const tag of hashtags) {
+  for (const tag of clean(hashtags)) {
     const key = tag.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -59,7 +66,7 @@ function mergeWithDefaults(hashtags: string[], defaults: string[]): string[] {
   if (defaults.length === 0) return deduped;
 
   const merged = [...deduped];
-  for (const tag of defaults) {
+  for (const tag of clean(defaults)) {
     const key = tag.toLowerCase();
     if (!seen.has(key)) {
       seen.add(key);

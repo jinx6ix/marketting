@@ -405,31 +405,60 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
           ),
         });
 
-        const mediaSource = await resolvePlatformMedia(
-          platform,
-          item.media ?? [],
-          target.variant_media as MediaEntry[] | null,
-          async (variant) => {
-            console.log("[publish] MEDIA VARIANT CREATED:", {
+        // Bounded: image compression involves a storage download, a sharp
+        // re-encode, and a storage upload — any one of those hanging
+        // (a slow/stuck native binary call, a stalled network request)
+        // would otherwise block this target indefinitely, which is
+        // exactly what "stuck in publishing, reaped after 15 minutes"
+        // looks like. Give it 45s; on timeout, fall back to the
+        // unmodified original rather than block the whole job — the
+        // platform's own size-limit error (if any) can still surface
+        // normally afterward instead of the target silently hanging.
+        let mediaSource: MediaEntry[];
+        try {
+          mediaSource = await withTimeout(
+            resolvePlatformMedia(
+              platform,
+              item.media ?? [],
+              target.variant_media as MediaEntry[] | null,
+              async (variant) => {
+                console.log("[publish] MEDIA VARIANT CREATED:", {
+                  targetId: target.id,
+                  platform,
+                  variantMediaCount: variant.length,
+                });
+
+                const { error: variantError } = await admin
+                  .from("post_targets")
+                  .update({ variant_media: variant as unknown as Json })
+                  .eq("id", target.id);
+
+                if (variantError) {
+                  console.error("[publish] MEDIA VARIANT SAVE ERROR:", {
+                    targetId: target.id,
+                    platform,
+                    error: variantError,
+                  });
+                }
+              }
+            ),
+            45_000,
+            "resolvePlatformMedia"
+          );
+        } catch (mediaError) {
+          console.error(
+            "[publish] MEDIA RESOLUTION FAILED OR TIMED OUT — falling back to original media:",
+            {
               targetId: target.id,
               platform,
-              variantMediaCount: variant.length,
-            });
-
-            const { error: variantError } = await admin
-              .from("post_targets")
-              .update({ variant_media: variant as unknown as Json })
-              .eq("id", target.id);
-
-            if (variantError) {
-              console.error("[publish] MEDIA VARIANT SAVE ERROR:", {
-                targetId: target.id,
-                platform,
-                error: variantError,
-              });
+              error:
+                mediaError instanceof Error
+                  ? mediaError.message
+                  : String(mediaError),
             }
-          }
-        );
+          );
+          mediaSource = item.media ?? [];
+        }
 
         const mediaType = pickMediaType(mediaSource);
 
@@ -825,4 +854,24 @@ function pickMediaType(
   )
     ? "video"
     : "image";
+}
+
+/** Rejects with an Error after `ms` if `promise` hasn't settled by then. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }

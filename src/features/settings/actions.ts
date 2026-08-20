@@ -275,12 +275,20 @@ const orgSchema = z.object({
   industry_niche: z.array(z.string().trim().min(1).max(80)).max(20),
   default_hashtags: z
     .array(
+      // Stripped, not added — hashtags are stored bare (no leading "#")
+      // everywhere else in the app (composer manual add, AI suggestions),
+      // and "#" is only ever prepended at final display/publish time (see
+      // format.ts's tag() helper). Storing these WITH "#" was the one
+      // inconsistent spot, and merging a "#"-prefixed default into an
+      // item's hashtags array produced visible "##..." doubling wherever
+      // that array later got "#"-prefixed again (e.g. the item detail
+      // page's hashtag preview).
       z
         .string()
         .trim()
         .min(1)
         .max(80)
-        .transform((h) => (h.startsWith("#") ? h : `#${h}`))
+        .transform((h) => h.replace(/^#+/, ""))
     )
     .max(30),
 });

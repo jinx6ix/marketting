@@ -612,7 +612,7 @@ export function Composer({
               <div className="flex flex-wrap gap-1.5">
                 {hashtags.map((h) => (
                   <Badge key={h} variant="secondary" className="gap-1">
-                    #{h}
+                    {h.startsWith("#") ? h : `#${h}`}
                     <button
                       type="button"
                       onClick={() =>
