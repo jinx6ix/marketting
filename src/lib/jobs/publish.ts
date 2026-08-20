@@ -8,6 +8,7 @@ import {
   type PublishPayload,
 } from "@/lib/social/types";
 import { formatForPlatform } from "@/lib/social/format";
+import { resolvePlatformMedia, type MediaEntry } from "@/lib/social/media-resolver";
 import {
   nextRetryAt,
   tryAcquire,
@@ -15,13 +16,7 @@ import {
 } from "./rate-limit";
 import { runJob } from "./runner";
 import { rollupItemStatus } from "./item-rollup";
-import type { Platform } from "@/types/database";
-
-interface MediaEntry {
-  storage_path?: string;
-  url?: string;
-  type?: "image" | "video";
-}
+import type { Platform, Json } from "@/types/database";
 
 /**
  * Publish job:
@@ -31,10 +26,12 @@ interface MediaEntry {
  * 3. Acquires a platform rate-limit slot.
  * 4. Claims the target using an optimistic database lock.
  * 5. Loads the connected social account and tokens.
- * 6. Publishes through the platform adapter.
- * 7. Persists the external post ID.
- * 8. Handles retryable/non-retryable failures.
- * 9. Rolls the parent marketing item status up.
+ * 6. Resolves platform-specific media (compresses oversized images, reuses
+ *    a previously-generated variant if one exists).
+ * 7. Publishes through the platform adapter.
+ * 8. Persists the external post ID.
+ * 9. Handles retryable/non-retryable failures.
+ * 10. Rolls the parent marketing item status up.
  */
 export async function publishDue(): Promise<ReturnType<typeof runJob>> {
   return runJob("publish", async () => {
@@ -195,6 +192,18 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
       // ---------------------------------------------------------------------
       // 4B. Claim target
+      //
+      // maybeSingle(), not single(): when another worker claims this same
+      // target first (a real, expected race between /api/cron/publish and
+      // /api/cron/retry-partial, or two overlapping publish ticks), this
+      // update matches 0 rows. single() treats 0 rows as an error
+      // (PGRST116, "Cannot coerce the result to a single JSON object"),
+      // which is noisy and semantically wrong — losing a claim race is a
+      // normal, expected outcome, not a database failure. With
+      // maybeSingle(), that case now comes back as claimError: null,
+      // claimed: null, and falls through to the ordinary
+      // "SKIPPED - TARGET WAS NOT CLAIMED" log below instead of the
+      // "CLAIM DATABASE ERROR" one.
       // ---------------------------------------------------------------------
 
       console.log("[publish] Attempting to claim target:", {
@@ -211,7 +220,7 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
         .eq("id", target.id)
         .in("status", ["pending", "queued"])
         .select("id, status")
-        .single();
+        .maybeSingle();
 
       console.log("[publish] CLAIM RESULT:", {
         targetId: target.id,
@@ -235,7 +244,7 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
 
       if (!claimed) {
         console.log(
-          "[publish] SKIPPED - TARGET WAS NOT CLAIMED:",
+          "[publish] SKIPPED - TARGET ALREADY CLAIMED BY ANOTHER WORKER:",
           {
             targetId: target.id,
             platform,
@@ -376,13 +385,51 @@ export async function publishDue(): Promise<ReturnType<typeof runJob>> {
         });
 
         // -------------------------------------------------------------------
-        // 4H. Resolve media.
+        // 4H. Resolve platform-specific media.
+        //
+        // Reuses target.variant_media if a compressed variant already
+        // exists for this target; otherwise checks each image against this
+        // platform's real size limit (Meta rejects Facebook photos over
+        // 10MB outright — error_subcode 1366046, "Photos should be less
+        // than 10 MB") and compresses anything oversized, persisting the
+        // result back onto variant_media so retries reuse it instead of
+        // re-compressing from scratch every attempt.
         // -------------------------------------------------------------------
 
-        const mediaSource =
-          (target.variant_media as MediaEntry[] | null) ??
-          item.media ??
-          [];
+        console.log("[publish] MEDIA VARIANT CHECK:", {
+          targetId: target.id,
+          platform,
+          hasExistingVariant: Boolean(
+            target.variant_media &&
+              (target.variant_media as MediaEntry[]).length > 0
+          ),
+        });
+
+        const mediaSource = await resolvePlatformMedia(
+          platform,
+          item.media ?? [],
+          target.variant_media as MediaEntry[] | null,
+          async (variant) => {
+            console.log("[publish] MEDIA VARIANT CREATED:", {
+              targetId: target.id,
+              platform,
+              variantMediaCount: variant.length,
+            });
+
+            const { error: variantError } = await admin
+              .from("post_targets")
+              .update({ variant_media: variant as unknown as Json })
+              .eq("id", target.id);
+
+            if (variantError) {
+              console.error("[publish] MEDIA VARIANT SAVE ERROR:", {
+                targetId: target.id,
+                platform,
+                error: variantError,
+              });
+            }
+          }
+        );
 
         const mediaType = pickMediaType(mediaSource);
 
@@ -670,37 +717,96 @@ async function finalizeTarget(
 /**
  * Turn storage paths into signed/public URLs that platforms can fetch.
  */
-async function resolveMediaUrls(
-  media: MediaEntry[]
-): Promise<string[]> {
+async function resolveMediaUrls(media: MediaEntry[]): Promise<string[]> {
   const admin = createAdminClient();
-
   const urls: string[] = [];
 
-  for (const mediaEntry of media) {
-    if (mediaEntry.url) {
-      urls.push(mediaEntry.url);
+  for (const m of media) {
+    let url: string | null = null;
+
+    if (m.url) {
+      url = m.url;
+    } else if (m.storage_path) {
+      console.log("[publish] Creating signed URL:", {
+        storagePath: m.storage_path,
+      });
+
+      const { data, error } = await admin.storage
+        .from("media")
+        .createSignedUrl(m.storage_path, 60 * 60 * 24);
+
+      if (error) {
+        console.error("[publish] SIGNED URL ERROR:", {
+          storagePath: m.storage_path,
+          error: error.message,
+        });
+
+        continue;
+      }
+
+      url = data?.signedUrl ?? null;
+
+      // Never log the actual signed URL — it carries an access token in
+      // its query string. hasUrl + storagePath is enough to debug this
+      // step; the previous version logged url.substring(0, 200), which
+      // for a typical Supabase signed URL includes the token itself since
+      // the query string starts well before character 200.
+      console.log("[publish] SIGNED URL CREATED:", {
+        storagePath: m.storage_path,
+        hasUrl: !!url,
+      });
+    }
+
+    if (!url) {
+      console.error("[publish] NO MEDIA URL:", { storagePath: m.storage_path });
       continue;
     }
 
-    if (mediaEntry.storage_path) {
-      const { data, error } = await admin.storage
-        .from("media")
-        .createSignedUrl(
-          mediaEntry.storage_path,
-          60 * 60 * 24
-        );
+    // Check whether our own server can actually access the file.
+    try {
+      const response = await fetch(url, {
+        method: "HEAD",
+        redirect: "follow",
+      });
 
-      if (error) {
-        console.error("[publish] MEDIA SIGNED URL ERROR:", {
-          storagePath: mediaEntry.storage_path,
-          error,
+      console.log("[publish] MEDIA HEAD RESULT:", {
+        storagePath: m.storage_path,
+        status: response.status,
+        ok: response.ok,
+        contentType: response.headers.get("content-type"),
+        contentLength: response.headers.get("content-length"),
+      });
+
+      if (!response.ok) {
+        console.error("[publish] MEDIA URL IS NOT ACCESSIBLE:", {
+          storagePath: m.storage_path,
+          status: response.status,
+          statusText: response.statusText,
         });
+
+        continue;
       }
 
-      if (data?.signedUrl) {
-        urls.push(data.signedUrl);
-      }
+      const contentType =
+        response.headers.get("content-type")?.toLowerCase() ?? "";
+
+      const contentLength = response.headers.get("content-length");
+
+      console.log("[publish] MEDIA VALIDATION:", {
+        storagePath: m.storage_path,
+        contentType,
+        contentLength,
+        sizeMB: contentLength
+          ? (Number(contentLength) / 1024 / 1024).toFixed(2)
+          : "unknown",
+      });
+
+      urls.push(url);
+    } catch (error) {
+      console.error("[publish] MEDIA FETCH FAILED:", {
+        storagePath: m.storage_path,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
