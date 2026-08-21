@@ -75,6 +75,23 @@ interface MediaEntry {
   type: "image" | "video";
 }
 
+/**
+ * A <input type="datetime-local"> value is always interpreted by the
+ * browser as the VIEWER's local wall-clock time, with no timezone info of
+ * its own. `initial.scheduled_at` is a UTC ISO string (e.g.
+ * "2026-08-20T14:00:00.000Z") — feeding `.slice(0, 16)` of that straight
+ * into the input showed the raw UTC digits ("14:00") as if they were
+ * already local time, silently shifting the displayed (and, on save,
+ * re-submitted) time by the viewer's UTC offset every time an existing
+ * scheduled item was opened for editing. This converts the absolute UTC
+ * instant into the correct local wall-clock string first.
+ */
+function toLocalDatetimeInputValue(iso: string): string {
+  const d = new Date(iso);
+  const localMs = d.getTime() - d.getTimezoneOffset() * 60_000;
+  return new Date(localMs).toISOString().slice(0, 16);
+}
+
 export function Composer({
   accounts,
   campaigns,
@@ -103,7 +120,7 @@ export function Composer({
   );
   const [campaignId, setCampaignId] = useState(initial?.campaign_id ?? "");
   const [scheduledAt, setScheduledAt] = useState(
-    initial?.scheduled_at ? initial.scheduled_at.slice(0, 16) : ""
+    initial?.scheduled_at ? toLocalDatetimeInputValue(initial.scheduled_at) : ""
   );
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(
     new Set(initial?.targets?.map((t) => t.social_account_id) ?? [])

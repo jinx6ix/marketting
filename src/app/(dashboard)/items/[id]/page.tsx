@@ -21,6 +21,10 @@ import type { ItemFormValues } from "@/features/marketing-items/schemas";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Item" };
+// "Retry"/publishNow now awaits one real publish attempt (up to 90s) via
+// publishDue() instead of firing it unawaited — give the Server Action
+// enough room instead of risking the platform's default route timeout.
+export const maxDuration = 120;
 
 export default async function ItemDetailPage({
   params,

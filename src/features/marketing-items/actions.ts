@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/supabase/server";
 import { friendlyActionError } from "@/lib/jobs/action-errors";
 import { itemFormSchema, type ItemFormValues } from "./schemas";
-import { publishDue } from "@/lib/jobs/publish";
+import { publishDue, withTimeout } from "@/lib/jobs/publish";
 import type { Json } from "@/types/database";
 
 /**
@@ -505,8 +505,26 @@ export async function publishNow(id: string): Promise<PublishNowResult> {
   revalidatePath(`/items/${id}`);
   revalidatePath("/calendar");
 
-  // Fire immediately — don't wait for the next cron tick.
-  publishDue().catch(() => null);
+  // Actually wait for one real attempt instead of firing publishDue()
+  // unawaited — a fire-and-forget promise here depends on the JS runtime
+  // continuing to execute it *after* this action has already returned its
+  // response, which serverless platforms don't reliably guarantee (a
+  // function can be frozen the moment its response is sent), and even in
+  // a long-lived dev process it meant "Retry" looked like it silently did
+  // nothing unless `npm run worker` happened to also be running and picked
+  // it up on its own schedule. Bounded to 90s: comfortably covers ordinary
+  // publishes (images, most platforms) without making the button hang on
+  // a genuinely slow one (e.g. an Instagram video still processing) — if
+  // it times out, the item is already left in a normal "scheduled" state
+  // with pending targets, so the next scheduled tick (production cron, or
+  // npm run worker locally) still picks it up automatically either way.
+  try {
+    await withTimeout(publishDue(), 90_000, "publishDue");
+  } catch {
+    // Timed out, or publishDue threw for an unrelated reason — not a
+    // failure of this action itself; the retry is still queued and will
+    // be picked up on the next scheduled tick.
+  }
 
   return { id, queued: eligibleIds.length, alreadyPublished };
 }

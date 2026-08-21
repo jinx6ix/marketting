@@ -5,6 +5,10 @@ import { Composer } from "@/features/marketing-items/components/composer";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "New Item" };
+// "Save & publish now" now awaits one real publish attempt (up to 90s) via
+// publishDue() instead of firing it unawaited — give the Server Action
+// enough room instead of risking the platform's default route timeout.
+export const maxDuration = 120;
 
 export default async function NewItemPage({
   searchParams,
