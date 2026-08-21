@@ -14,7 +14,8 @@ import {
 import { PLATFORM_LABELS } from "@/components/charts/theme";
 import { DisconnectButton } from "@/features/settings/components/disconnect-button";
 import { SyncNowButton } from "@/features/settings/components/sync-now-button";
-import { formatNumber, isStale, relativeTime } from "@/lib/utils";
+import { formatNumber, isStale, relativeTime, formatInTimeZone } from "@/lib/utils";
+import { getOrgTimezone } from "@/lib/org-timezone";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Connected accounts" };
@@ -37,6 +38,7 @@ export default async function AccountsSettingsPage({
   searchParams: Promise<{ connected?: string; error?: string }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
+  const timezone = await getOrgTimezone(supabase, orgId!);
   const { connected, error } = await searchParams;
 
   const { data: accounts } = await supabase
@@ -171,9 +173,11 @@ export default async function AccountsSettingsPage({
                               ) : (
                                 <span>
                                   · token expires{" "}
-                                  {new Date(
-                                    account.token_expires_at
-                                  ).toLocaleDateString()}
+                                  {formatInTimeZone(
+                                    account.token_expires_at,
+                                    timezone,
+                                    { dateStyle: "medium" }
+                                  )}
                                 </span>
                               ))}
                             {lastPolled ? (

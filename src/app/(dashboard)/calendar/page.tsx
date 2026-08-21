@@ -8,12 +8,13 @@ import {
   format,
   isSameDay,
   isSameMonth,
-  isToday,
   parse,
   startOfMonth,
   startOfWeek,
 } from "date-fns";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import { getSessionContext } from "@/lib/supabase/server";
+import { getOrgTimezone } from "@/lib/org-timezone";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { StatTile } from "@/components/charts/stat-tile";
@@ -49,12 +50,27 @@ export default async function CalendarPage({
 }) {
   const { orgId, supabase } = await getSessionContext();
   const { month, platform } = await searchParams;
+  const timezone = await getOrgTimezone(supabase, orgId!);
 
-  const current = month ? parse(month, "yyyy-MM", new Date()) : new Date();
+  // Everything below operates on "zoned" Date objects — toZonedTime shifts
+  // a real instant so its LOCAL getters (what date-fns's startOfMonth,
+  // isSameDay, format, etc. all read internally) show the org's timezone's
+  // wall-clock time, regardless of what timezone the server process itself
+  // is actually running in. Vercel always runs Node in UTC (independent of
+  // deployment region) while local dev inherits the OS's timezone — without
+  // this, the day a post's card appears under, and what time it displays,
+  // would shift near midnight/hour boundaries between the two.
+  const nowZoned = toZonedTime(new Date(), timezone);
+  const current = month ? parse(month, "yyyy-MM", nowZoned) : nowZoned;
   const monthStart = startOfMonth(current);
   const monthEnd = endOfMonth(current);
   const gridStart = startOfWeek(monthStart);
   const gridEnd = endOfWeek(monthEnd);
+
+  // The DB query needs real UTC instants, not the shifted "zoned" ones —
+  // convert back before hitting Supabase.
+  const gridStartUtc = fromZonedTime(gridStart, timezone).toISOString();
+  const gridEndUtc = fromZonedTime(gridEnd, timezone).toISOString();
 
   const { data: rawItems } = await supabase
     .from("marketing_items")
@@ -63,12 +79,15 @@ export default async function CalendarPage({
     )
     .eq("org_id", orgId!)
     .not("scheduled_at", "is", null)
-    .gte("scheduled_at", gridStart.toISOString())
-    .lte("scheduled_at", gridEnd.toISOString())
+    .gte("scheduled_at", gridStartUtc)
+    .lte("scheduled_at", gridEndUtc)
     .order("scheduled_at");
 
   const items = (rawItems ?? []).map((i) => ({
     ...i,
+    // Pre-convert once here so every render-time comparison/format below
+    // just uses this directly instead of re-converting repeatedly.
+    scheduledZoned: i.scheduled_at ? toZonedTime(i.scheduled_at, timezone) : null,
     platforms: [
       ...new Set((i.post_targets ?? []).map((t) => t.platform as Platform)),
     ],
@@ -78,7 +97,9 @@ export default async function CalendarPage({
     ? items.filter((i) => i.platforms.includes(platform as Platform))
     : items;
 
-  const inMonth = visibleItems.filter((i) => isSameMonth(new Date(i.scheduled_at!), current));
+  const inMonth = visibleItems.filter(
+    (i) => i.scheduledZoned && isSameMonth(i.scheduledZoned, current)
+  );
   const scheduledCount = inMonth.filter((i) => i.status === "scheduled").length;
   const publishedCount = inMonth.filter((i) =>
     ["published", "partially_published"].includes(i.status)
@@ -171,9 +192,10 @@ export default async function CalendarPage({
         ))}
         {days.map((day) => {
           const dayItems = visibleItems.filter(
-            (i) => i.scheduled_at && isSameDay(new Date(i.scheduled_at), day)
+            (i) => i.scheduledZoned && isSameDay(i.scheduledZoned, day)
           );
           const dateParam = format(day, "yyyy-MM-dd");
+          const isToday = isSameDay(day, nowZoned);
           return (
             <div
               key={day.toISOString()}
@@ -186,7 +208,7 @@ export default async function CalendarPage({
                 <div
                   className={cn(
                     "flex size-5 items-center justify-center rounded-full text-[11px]",
-                    isToday(day) && "bg-primary font-semibold text-primary-foreground"
+                    isToday && "bg-primary font-semibold text-primary-foreground"
                   )}
                 >
                   {format(day, "d")}
@@ -207,8 +229,8 @@ export default async function CalendarPage({
                     href={`/items/${item.id}`}
                     className="block truncate rounded border bg-card px-1.5 py-1 transition-colors hover:border-primary/50"
                     title={`${item.title} — ${item.status.replace(/_/g, " ")}${
-                      item.scheduled_at
-                        ? ` at ${format(new Date(item.scheduled_at), "HH:mm")}`
+                      item.scheduledZoned
+                        ? ` at ${format(item.scheduledZoned, "HH:mm")}`
                         : ""
                     }`}
                   >
@@ -220,7 +242,7 @@ export default async function CalendarPage({
                         )}
                       />
                       <span className="shrink-0 tabular-nums text-muted-foreground">
-                        {item.scheduled_at ? format(new Date(item.scheduled_at), "HH:mm") : ""}
+                        {item.scheduledZoned ? format(item.scheduledZoned, "HH:mm") : ""}
                       </span>
                       <span className="truncate">{item.title}</span>
                     </div>

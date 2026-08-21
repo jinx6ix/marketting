@@ -21,7 +21,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
-import { daysAgoIso, formatNumber, formatPercent, isStale, relativeTime } from "@/lib/utils";
+import { daysAgoIso, formatNumber, formatPercent, isStale, relativeTime, formatInTimeZone } from "@/lib/utils";
+import { getOrgTimezone } from "@/lib/org-timezone";
 import { DateRangeTabs } from "@/components/analytics/date-range-tabs";
 import { ExportCsvButton } from "@/components/export-csv-button";
 import { RefreshDataButton } from "@/features/settings/components/refresh-data-button";
@@ -43,6 +44,7 @@ export default async function AnalyticsPage({
   searchParams: Promise<{ range?: string }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
+  const timezone = await getOrgTimezone(supabase, orgId!);
   const { range } = await searchParams;
   const days = VALID_RANGES.includes(Number(range)) ? Number(range) : 30;
 
@@ -636,7 +638,9 @@ export default async function AnalyticsPage({
                     <TableCell>{formatNumber(metrics?.impressions)}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {target.published_at
-                        ? new Date(target.published_at).toLocaleDateString()
+                        ? formatInTimeZone(target.published_at, timezone, {
+                            dateStyle: "medium",
+                          })
                         : "—"}
                     </TableCell>
                     <TableCell

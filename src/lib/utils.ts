@@ -25,6 +25,25 @@ export function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 86400_000).toISOString();
 }
 
+/**
+ * Formats a date in a specific IANA timezone, regardless of the server
+ * process's own timezone. Node processes on Vercel always run in UTC
+ * (independent of the deployment's region setting), while a local dev
+ * machine inherits the OS's local timezone — so any Server Component that
+ * formats a date with e.g. `.toLocaleString()` and no explicit timeZone
+ * looks correct locally and then silently shifts by the server's UTC
+ * offset once deployed. Always pass the org's configured timezone
+ * (organizations.timezone) here instead of relying on the ambient one.
+ */
+export function formatInTimeZone(
+  date: string | Date,
+  timeZone: string,
+  options: Intl.DateTimeFormatOptions = {}
+): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return new Intl.DateTimeFormat("en-US", { ...options, timeZone }).format(d);
+}
+
 /** True if `date` is null/undefined, or older than `hours` hours ago. */
 export function isStale(date: string | Date | null | undefined, hours: number): boolean {
   if (!date) return true;

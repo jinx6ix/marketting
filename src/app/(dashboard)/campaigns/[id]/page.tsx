@@ -20,7 +20,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatNumber } from "@/lib/utils";
+import { formatNumber, formatInTimeZone } from "@/lib/utils";
+import { getOrgTimezone } from "@/lib/org-timezone";
 
 export const metadata = { title: "Campaign" };
 
@@ -31,6 +32,7 @@ export default async function CampaignDetailPage({
 }) {
   const { id } = await params;
   const { orgId, supabase } = await getSessionContext();
+  const timezone = await getOrgTimezone(supabase, orgId!);
 
   const { data: campaign } = await supabase
     .from("campaigns")
@@ -169,7 +171,10 @@ export default async function CampaignDetailPage({
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {i.scheduled_at
-                        ? new Date(i.scheduled_at).toLocaleString()
+                        ? formatInTimeZone(i.scheduled_at, timezone, {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })
                         : "—"}
                     </TableCell>
                     <TableCell className="tabular-nums">

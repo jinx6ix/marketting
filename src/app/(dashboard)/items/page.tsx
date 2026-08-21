@@ -13,7 +13,8 @@ import {
 } from "@/components/ui/table";
 import { DeleteButton } from "@/components/delete-button";
 import { deleteItem } from "@/features/marketing-items/actions";
-import { relativeTime } from "@/lib/utils";
+import { relativeTime, formatInTimeZone } from "@/lib/utils";
+import { getOrgTimezone } from "@/lib/org-timezone";
 import type { ItemStatus, ItemType } from "@/types/database";
 
 export const metadata = { title: "Marketing Items" };
@@ -49,6 +50,7 @@ export default async function ItemsPage({
   if (type) query = query.eq("type", type as ItemType);
 
   const { data: items, count } = await query;
+  const timezone = await getOrgTimezone(supabase, orgId!);
   const totalPages = Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE));
   const pageHref = (p: number) => {
     const params = new URLSearchParams();
@@ -126,7 +128,10 @@ export default async function ItemsPage({
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {item.scheduled_at
-                  ? new Date(item.scheduled_at).toLocaleString()
+                  ? formatInTimeZone(item.scheduled_at, timezone, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })
                   : relativeTime(item.created_at)}
               </TableCell>
               <TableCell>

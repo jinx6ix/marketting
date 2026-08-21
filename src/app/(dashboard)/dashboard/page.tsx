@@ -18,13 +18,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { PLATFORM_COLORS, PLATFORM_LABELS } from "@/components/charts/theme";
-import { daysAgoIso, relativeTime } from "@/lib/utils";
+import { daysAgoIso, relativeTime, formatInTimeZone } from "@/lib/utils";
+import { getOrgTimezone } from "@/lib/org-timezone";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   const { orgId, supabase } = await getSessionContext();
+  const timezone = await getOrgTimezone(supabase, orgId!);
 
   const since = daysAgoIso(30).slice(0, 10);
 
@@ -242,7 +244,7 @@ export default async function DashboardPage() {
                   <StatusBadge status={item.status} />
                   {item.scheduled_at && (
                     <span>
-                      {new Date(item.scheduled_at).toLocaleString(undefined, {
+                      {formatInTimeZone(item.scheduled_at, timezone, {
                         month: "short",
                         day: "numeric",
                         hour: "2-digit",
