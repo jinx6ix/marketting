@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getSessionContext } from "@/lib/supabase/server";
 import { friendlyActionError } from "@/lib/jobs/action-errors";
+import { Platform } from "@/types/database"; // Add this import
 
 export interface ActionResult {
   error?: string;
