@@ -129,6 +129,20 @@ export interface Database {
         created_at: string;
         updated_at: string;
       }>;
+      content_templates: Row<{
+        id: string;
+        org_id: string;
+        name: string;
+        type: ItemType;
+        title: string;
+        body: string;
+        hashtags: string[];
+        destination: string | null;
+        default_platforms: Platform[];
+        created_by: string | null;
+        created_at: string;
+        updated_at: string;
+      }>;
       marketing_items: Row<
         {
           id: string;
@@ -470,3 +484,4 @@ export type CompetitorAccount = Database["public"]["Tables"]["competitor_account
 export type CompetitorPost = Database["public"]["Tables"]["competitor_posts"]["Row"];
 export type AiStrategy = Database["public"]["Tables"]["ai_strategies"]["Row"];
 export type AiRecommendation = Database["public"]["Tables"]["ai_recommendations"]["Row"];
+export type ContentTemplate = Database["public"]["Tables"]["content_templates"]["Row"];

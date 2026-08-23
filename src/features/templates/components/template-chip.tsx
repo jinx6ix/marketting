@@ -17,6 +17,19 @@ export function TemplateChip({
 }) {
   const [pending, startTransition] = useTransition();
 
+  const handleDelete = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    try {
+      await deleteTemplate(id);
+    } catch (error) {
+      console.error("Failed to delete template:", error);
+      // You can add a toast notification here if you have one set up
+      // Example: toast.error("Failed to delete template");
+    }
+  };
+
   return (
     <span
       className={cn(
@@ -24,13 +37,15 @@ export function TemplateChip({
         active ? "border-primary bg-primary/10 font-medium" : "hover:bg-accent"
       )}
     >
-      <Link href={`/items/new?template=${id}`}>{name}</Link>
+      <Link href={`/items/new?template=${id}`} className="hover:underline">
+        {name}
+      </Link>
       <button
         type="button"
         aria-label={`Delete template ${name}`}
         disabled={pending}
-        onClick={() => startTransition(() => deleteTemplate(id))}
-        className="text-muted-foreground hover:text-destructive"
+        onClick={handleDelete}
+        className="text-muted-foreground hover:text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <X className="size-3" />
       </button>
