@@ -4,6 +4,7 @@ import { getAdapter } from "@/lib/social/registry";
 import { getAccountTokens } from "@/lib/social/accounts";
 import { tryAcquire, markRateLimited } from "./rate-limit";
 import { SocialApiError } from "@/lib/social/types";
+import { sendAlert } from "@/lib/alerts";
 import { runJob } from "./runner";
 import type { Platform, Json } from "@/types/database";
 
@@ -23,7 +24,7 @@ export async function syncAccountMetrics(
   const admin = createAdminClient();
   const { data: acc } = await admin
     .from("social_accounts")
-    .select("id, org_id, platform, metadata, status")
+    .select("id, org_id, platform, handle, display_name, metadata, status")
     .eq("id", accountId)
     .single();
   if (!acc) return { ok: false, error: "Account not found" };
@@ -71,6 +72,9 @@ export async function syncAccountMetrics(
     }
     if (e instanceof SocialApiError && e.code.startsWith("http_401")) {
       await admin.from("social_accounts").update({ status: "expired" }).eq("id", acc.id);
+      await sendAlert(
+        `🔌 ${platform} account "${acc.display_name ?? acc.handle ?? acc.id}" needs reconnecting — access token was rejected during a routine metrics sync.`
+      );
       return {
         ok: false,
         error: "Access token was rejected — account marked expired, please reconnect.",

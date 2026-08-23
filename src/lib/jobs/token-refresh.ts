@@ -2,6 +2,7 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAdapter } from "@/lib/social/registry";
 import { getAccountTokens, saveAccountTokens } from "@/lib/social/accounts";
+import { sendAlert } from "@/lib/alerts";
 import { runJob } from "./runner";
 import type { Platform } from "@/types/database";
 
@@ -17,7 +18,7 @@ export async function refreshExpiringTokens(): Promise<ReturnType<typeof runJob>
 
     const { data: expiring } = await admin
       .from("social_accounts")
-      .select("id, platform")
+      .select("id, platform, handle, display_name")
       .eq("status", "active")
       .not("token_expires_at", "is", null)
       .lte("token_expires_at", cutoff)
@@ -36,6 +37,14 @@ export async function refreshExpiringTokens(): Promise<ReturnType<typeof runJob>
           .from("social_accounts")
           .update({ status: "expired" })
           .eq("id", acc.id);
+        // This is the more urgent of the two "expired" paths: the token
+        // was going to run out within 7 days regardless, and the proactive
+        // refresh — the thing meant to prevent that — just failed. The
+        // account will stop working for real publishing/metrics soon if
+        // nobody reconnects it.
+        await sendAlert(
+          `⚠️ ${acc.platform} account "${acc.display_name ?? acc.handle ?? acc.id}" needs reconnecting — its access token is expiring within 7 days and the automatic refresh failed.`
+        );
       }
     }
     return processed;

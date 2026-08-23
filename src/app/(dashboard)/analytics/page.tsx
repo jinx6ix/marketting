@@ -276,6 +276,45 @@ export default async function AnalyticsPage({
     }))
     .sort((a, b) => b.avgEngagement - a.avgEngagement);
 
+  // ── Hashtag performance ──
+  // Which hashtags actually correlate with engagement — reuses the same
+  // item batch already fetched above for content-type, just also pulling
+  // `hashtags` instead of a second query.
+  const { data: itemsForHashtags } = itemIdsForMedia.length
+    ? await supabase
+        .from("marketing_items")
+        .select("id, hashtags")
+        .in("id", itemIdsForMedia)
+    : { data: [] as { id: string; hashtags: string[] }[] };
+  const hashtagsByItem = new Map(
+    (itemsForHashtags ?? []).map((mi) => [mi.id, mi.hashtags ?? []])
+  );
+  const hashtagAgg = new Map<string, { engagement: number; posts: number }>();
+  for (const t of recentTargets ?? []) {
+    const tags = hashtagsByItem.get(t.item_id) ?? [];
+    if (tags.length === 0) continue;
+    const snap = latestRecentSnap.get(t.id);
+    const eng = snap ? (snap.likes ?? 0) + (snap.comments ?? 0) + (snap.shares ?? 0) : 0;
+    for (const tag of tags) {
+      const key = tag.toLowerCase();
+      const bucket = hashtagAgg.get(key) ?? { engagement: 0, posts: 0 };
+      bucket.engagement += eng;
+      bucket.posts += 1;
+      hashtagAgg.set(key, bucket);
+    }
+  }
+  // Only hashtags used on 2+ posts in this window — a single-use tag's
+  // "average" is really just that one post's number, not a pattern.
+  const hashtagPerformance = [...hashtagAgg.entries()]
+    .filter(([, v]) => v.posts >= 2)
+    .map(([tag, v]) => ({
+      tag,
+      avgEngagement: Math.round(v.engagement / v.posts),
+      posts: v.posts,
+    }))
+    .sort((a, b) => b.avgEngagement - a.avgEngagement)
+    .slice(0, 15);
+
   interface AccountStat {
     id: string;
     platform: Platform;
@@ -429,6 +468,42 @@ export default async function AnalyticsPage({
               series={[{ key: "avgEngagement", label: "Avg engagement/post" }]}
               xKey="type"
             />
+          </CardContent>
+        </Card>
+      )}
+
+      {hashtagPerformance.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Hashtag performance</CardTitle>
+            <CardDescription>
+              Average engagement per post for hashtags used 2+ times, last{" "}
+              {days} days
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Hashtag</TableHead>
+                  <TableHead className="text-right">Posts</TableHead>
+                  <TableHead className="text-right">Avg engagement/post</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {hashtagPerformance.map((h) => (
+                  <TableRow key={h.tag}>
+                    <TableCell className="font-medium text-primary">#{h.tag}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {h.posts}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(h.avgEngagement)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
       )}

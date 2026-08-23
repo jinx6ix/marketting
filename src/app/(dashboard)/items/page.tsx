@@ -2,18 +2,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/status-badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { DeleteButton } from "@/components/delete-button";
-import { deleteItem } from "@/features/marketing-items/actions";
-import { relativeTime, formatInTimeZone } from "@/lib/utils";
+import { ItemsTable, type ItemRow } from "@/features/marketing-items/components/items-table";
 import { getOrgTimezone } from "@/lib/org-timezone";
 import type { ItemStatus, ItemType } from "@/types/database";
 
@@ -93,65 +82,7 @@ export default async function ItemsPage({
         ))}
       </div>
 
-      <div className="overflow-x-auto rounded-md border">
-        <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Title</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Destination</TableHead>
-            <TableHead>Campaign</TableHead>
-            <TableHead>Scheduled</TableHead>
-            <TableHead className="w-10" />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {(items ?? []).map((item) => (
-            <TableRow key={item.id}>
-              <TableCell>
-                <Link href={`/items/${item.id}`} className="font-medium hover:underline">
-                  {item.title}
-                </Link>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {item.type.replace("_", " ")}
-              </TableCell>
-              <TableCell>
-                <StatusBadge status={item.status} />
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {item.destination ?? "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {(item.campaigns as { name: string } | null)?.name ?? "—"}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {item.scheduled_at
-                  ? formatInTimeZone(item.scheduled_at, timezone, {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })
-                  : relativeTime(item.created_at)}
-              </TableCell>
-              <TableCell>
-                <DeleteButton
-                  label={item.title}
-                  onDelete={deleteItem.bind(null, item.id)}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
-          {(items ?? []).length === 0 && (
-            <TableRow>
-              <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                No items yet. Create your first marketing item.
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
-      </div>
+      <ItemsTable items={(items ?? []) as unknown as ItemRow[]} timezone={timezone} />
 
       {totalPages > 1 && (
         <div className="flex flex-col items-start justify-between gap-2 text-sm sm:flex-row sm:items-center">

@@ -6,6 +6,7 @@ import { Sparkles, Wand2, Hash, Upload, X as XIcon, Eye } from "lucide-react";
 import * as tus from "tus-js-client";
 import { createClient } from "@/lib/supabase/client";
 import { compressVideo } from "@/lib/video/compress";
+import { formatForPlatform } from "@/lib/social/format";
 import { createItem, publishNow, updateItem } from "../actions";
 import type { ItemFormValues } from "../schemas";
 import { Button } from "@/components/ui/button";
@@ -813,6 +814,80 @@ export function Composer({
             </CardContent>
           </Card>
         )}
+
+        {/* Live preview — exactly what formatForPlatform (used at actual
+            publish time) will produce, so mistakes surface here instead
+            of after publishing. */}
+        {activeAccounts.size > 0 &&
+          (() => {
+            const previewId = activeVariantTab ?? [...activeAccounts][0];
+            const account = accounts.find((a) => a.id === previewId);
+            if (!account) return null;
+            const override = variants[previewId];
+            const formatted = override
+              ? { text: override, title }
+              : formatForPlatform(account.platform, { title, body, hashtags });
+            const limit = MAX_LENGTHS[account.platform];
+            const hasTitle =
+              account.platform === "youtube" || account.platform === "pinterest";
+            const firstImage = media.find((m) => m.type === "image");
+            return (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Eye className="size-4" />
+                    Preview — {PLATFORM_LABELS[account.platform]}
+                  </CardTitle>
+                  <CardDescription>
+                    {override
+                      ? "Using this platform's custom copy"
+                      : "Master copy + hashtags, formatted for this platform"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="max-w-sm rounded-lg border bg-card p-3">
+                    <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex size-6 items-center justify-center rounded-full bg-muted font-medium">
+                        {(account.display_name ?? account.handle ?? "?")
+                          .slice(0, 1)
+                          .toUpperCase()}
+                      </div>
+                      {account.display_name ?? account.handle}
+                    </div>
+                    {media.length > 0 && (
+                      <div className="mb-2 flex h-32 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground">
+                        {media.some((m) => m.type === "video")
+                          ? "🎬 Video attached"
+                          : firstImage
+                            ? "🖼 Image attached"
+                            : null}
+                      </div>
+                    )}
+                    {hasTitle && formatted.title && (
+                      <p className="mb-1 text-sm font-semibold">{formatted.title}</p>
+                    )}
+                    <p className="whitespace-pre-wrap break-words text-sm">
+                      {formatted.text || (
+                        <span className="text-muted-foreground">
+                          Nothing to preview yet — add a body or title.
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div
+                    className={cn(
+                      "mt-2 text-right text-xs",
+                      formatted.text.length > limit
+                        ? "font-medium text-destructive"
+                        : "text-muted-foreground"
+                    )}
+                  >
+                    {formatted.text.length} / {limit}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
       </div>
 
       {/* Right rail: targets + schedule */}

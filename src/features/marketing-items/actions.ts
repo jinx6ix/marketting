@@ -7,6 +7,7 @@ import { getSessionContext } from "@/lib/supabase/server";
 import { friendlyActionError } from "@/lib/jobs/action-errors";
 import { itemFormSchema, type ItemFormValues } from "./schemas";
 import { publishDue, withTimeout } from "@/lib/jobs/publish";
+import { sendAlert } from "@/lib/alerts";
 import type { Json } from "@/types/database";
 
 /**
@@ -285,18 +286,46 @@ export async function deleteItem(id: string): Promise<ActionResult> {
   redirect("/items");
 }
 
+export interface BulkActionResult extends ActionResult {
+  count?: number;
+}
+
+/** Delete multiple items at once — from the items list's bulk-select bar. */
+export async function bulkDeleteItems(ids: string[]): Promise<BulkActionResult> {
+  const { user, orgId, supabase } = await getSessionContext();
+  if (!user || !orgId) return { error: "Unauthorized" };
+  if (ids.length === 0) return { error: "Nothing selected" };
+
+  const { error, count } = await supabase
+    .from("marketing_items")
+    .delete({ count: "exact" })
+    .eq("org_id", orgId)
+    .in("id", ids);
+  if (error) return { error: friendlyActionError(error) };
+
+  revalidatePath("/items");
+  revalidatePath("/calendar");
+  return { count: count ?? ids.length };
+}
+
 /** Editor hands a draft to owners/admins for sign-off. */
 export async function submitForReview(id: string): Promise<ActionResult> {
   const { user, orgId, supabase } = await getSessionContext();
   if (!user || !orgId) return { error: "Unauthorized" };
 
-  const { error } = await supabase
+  const { data: item, error } = await supabase
     .from("marketing_items")
     .update({ status: "in_review" })
     .eq("id", id)
     .eq("org_id", orgId)
-    .in("status", ["draft", "failed"]);
+    .in("status", ["draft", "failed"])
+    .select("title")
+    .single();
   if (error) return { error: friendlyActionError(error) };
+
+  if (item) {
+    await sendAlert(`📝 "${item.title}" was submitted for review and needs approval.`);
+  }
 
   revalidatePath("/items");
   revalidatePath(`/items/${id}`);

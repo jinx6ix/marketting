@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { sendAlert } from "@/lib/alerts";
 import { runJob } from "./runner";
 
 const STALE_MINUTES = 20;
@@ -37,8 +38,23 @@ export async function reapStaleJobRuns(
       })
       .is("finished_at", null)
       .lt("started_at", cutoff)
-      .select("id");
+      .select("id, job");
     if (error) throw new Error(error.message);
+
+    if (updated && updated.length > 0) {
+      // This reaper only ever runs because SOMETHING is currently able to
+      // fire it — so a clean sweep here doesn't mean the worker is
+      // healthy overall, it means it recovered enough to run this one
+      // job. Worth flagging every time regardless: repeated crashes are
+      // exactly the pattern that left targets stuck "publishing" for
+      // hours with nobody noticing earlier.
+      const jobNames = [...new Set(updated.map((u) => u.job))].join(", ");
+      await sendAlert(
+        `🪦 ${updated.length} job run(s) were stuck with no completion in ${
+          staleMs / 60_000
+        } minutes and got reaped: ${jobNames}. The worker process likely crashed or was killed mid-run — worth checking why.`
+      );
+    }
 
     return updated?.length ?? 0;
   });

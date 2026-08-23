@@ -5,6 +5,7 @@ import { Composer } from "@/features/marketing-items/components/composer";
 import { ApprovalBar } from "@/features/marketing-items/components/approval-bar";
 import { PublishNowButton } from "@/features/marketing-items/components/publish-now-button";
 import { ClientDeleteButton } from "@/components/client-delete-button";
+import { SaveAsTemplateButton } from "@/features/templates/components/save-as-template-button";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -97,13 +98,15 @@ export default async function ItemDetailPage({
         )}
         <div className="flex items-center justify-between gap-2">
           {(targets ?? []).length > 0 && <PublishNowButton itemId={id} />}
-          <ClientDeleteButton
-            itemId={id}
-            label={item.title}
-            confirmText="Delete item?"
-            variant="outline"
-            className="ml-auto"
-          />
+          <div className="ml-auto flex items-center gap-2">
+            <SaveAsTemplateButton itemId={id} />
+            <ClientDeleteButton
+              itemId={id}
+              label={item.title}
+              confirmText="Delete item?"
+              variant="outline"
+            />
+          </div>
         </div>
         <Composer
           orgId={orgId!}

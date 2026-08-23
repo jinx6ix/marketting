@@ -1,19 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
-
-async function sendFailureAlert(text: string): Promise<void> {
-  const url = process.env.ALERT_WEBHOOK_URL;
-  if (!url) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, content: text }),
-    });
-  } catch {
-    // Alerting must never break the publishing path.
-  }
-}
+import { sendAlert as sendFailureAlert } from "@/lib/alerts";
 
 /**
  * Roll up a marketing_item's status from its post_targets.

@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { ArrowLeft, Hash } from "lucide-react";
+import { ArrowLeft, Hash, BookmarkPlus } from "lucide-react";
 import { getSessionContext } from "@/lib/supabase/server";
 import { Composer } from "@/features/marketing-items/components/composer";
+import { TemplateChip } from "@/features/templates/components/template-chip";
 import type { Platform } from "@/types/database";
 
 export const metadata = { title: "New Item" };
@@ -13,12 +14,12 @@ export const maxDuration = 120;
 export default async function NewItemPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string }>;
+  searchParams: Promise<{ date?: string; template?: string }>;
 }) {
   const { orgId, supabase } = await getSessionContext();
-  const { date } = await searchParams;
+  const { date, template: templateId } = await searchParams;
 
-  const [{ data: accounts }, { data: campaigns }, { data: org }] =
+  const [{ data: accounts }, { data: campaigns }, { data: org }, { data: templates }] =
     await Promise.all([
       supabase
         .from("social_accounts")
@@ -37,9 +38,17 @@ export default async function NewItemPage({
         .select("default_hashtags")
         .eq("id", orgId!)
         .single(),
+      supabase
+        .from("content_templates")
+        .select("id, name, type, title, body, hashtags, destination")
+        .eq("org_id", orgId!)
+        .order("name"),
     ]);
 
   const defaultHashtags = org?.default_hashtags ?? [];
+  const selectedTemplate = templateId
+    ? (templates ?? []).find((t) => t.id === templateId)
+    : undefined;
 
   // Coming from a calendar day's quick-add link (?date=yyyy-MM-dd) —
   // prefill scheduled_at to 9am that day, in the browser's local
@@ -79,6 +88,22 @@ export default async function NewItemPage({
         </div>
       </div>
 
+      {(templates ?? []).length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border p-2">
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <BookmarkPlus className="size-3.5" /> Start from:
+          </span>
+          {(templates ?? []).map((t) => (
+            <TemplateChip key={t.id} id={t.id} name={t.name} active={t.id === templateId} />
+          ))}
+          {templateId && (
+            <Link href="/items/new" className="ml-1 text-xs text-primary hover:underline">
+              Clear
+            </Link>
+          )}
+        </div>
+      )}
+
       {defaultHashtags.length === 0 && (
         <div className="flex items-start gap-2 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
           <Hash className="mt-0.5 size-3.5 shrink-0" />
@@ -104,7 +129,18 @@ export default async function NewItemPage({
           }[]
         }
         campaigns={campaigns ?? []}
-        initial={{ hashtags: defaultHashtags, scheduled_at: scheduledAt }}
+        initial={{
+          hashtags: selectedTemplate?.hashtags?.length
+            ? selectedTemplate.hashtags
+            : defaultHashtags,
+          scheduled_at: scheduledAt,
+          ...(selectedTemplate && {
+            type: selectedTemplate.type as "social_post" | "promotion" | "announcement" | "email",
+            title: selectedTemplate.title,
+            body: selectedTemplate.body,
+            destination: selectedTemplate.destination ?? undefined,
+          }),
+        }}
       />
     </div>
   );
