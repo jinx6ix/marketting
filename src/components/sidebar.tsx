@@ -8,6 +8,7 @@ import {
   Calendar,
   FileText,
   Megaphone,
+  Target,
   Inbox,
   BarChart3,
   Users,
@@ -42,6 +43,7 @@ const GROUPS: NavGroup[] = [
       { href: "/calendar", label: "Calendar", icon: Calendar },
       { href: "/items", label: "Marketing Items", icon: FileText },
       { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+      { href: "/ads", label: "Ads", icon: Target },
     ],
   },
   {

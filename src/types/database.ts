@@ -138,10 +138,63 @@ export interface Database {
         body: string;
         hashtags: string[];
         destination: string | null;
-        default_platforms: Platform[];
+        default_platforms: string[];
         created_by: string | null;
         created_at: string;
-        updated_at: string;
+      }>;
+      ad_campaigns: Row<
+        {
+          id: string;
+          org_id: string;
+          name: string;
+          platform: Platform;
+          objective: string;
+          management_mode: "internal" | "live";
+          status: "draft" | "active" | "paused" | "completed" | "archived";
+          budget: number | null;
+          currency: string;
+          start_date: string | null;
+          end_date: string | null;
+          targeting_notes: string | null;
+          destination: string | null;
+          linked_item_id: string | null;
+          social_account_id: string | null;
+          meta_ad_account_id: string | null;
+          external_campaign_id: string | null;
+          last_synced_at: string | null;
+          last_sync_error: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        },
+        [
+          {
+            foreignKeyName: "ad_campaigns_linked_item_id_fkey";
+            columns: ["linked_item_id"];
+            isOneToOne: false;
+            referencedRelation: "marketing_items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ad_campaigns_social_account_id_fkey";
+            columns: ["social_account_id"];
+            isOneToOne: false;
+            referencedRelation: "social_accounts";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
+      ad_performance_snapshots: Row<{
+        id: string;
+        org_id: string;
+        campaign_id: string;
+        captured_at: string;
+        spend: number | null;
+        impressions: number | null;
+        clicks: number | null;
+        conversions: number | null;
+        source: "manual" | "api";
+        note: string | null;
       }>;
       marketing_items: Row<
         {
@@ -484,4 +537,3 @@ export type CompetitorAccount = Database["public"]["Tables"]["competitor_account
 export type CompetitorPost = Database["public"]["Tables"]["competitor_posts"]["Row"];
 export type AiStrategy = Database["public"]["Tables"]["ai_strategies"]["Row"];
 export type AiRecommendation = Database["public"]["Tables"]["ai_recommendations"]["Row"];
-export type ContentTemplate = Database["public"]["Tables"]["content_templates"]["Row"];
