@@ -7,6 +7,7 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|tiktokYJsUO50zPPJE7YgxVRx1SMnHT8ORIBAf\\.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Exclude these paths from authentication
+    "/((?!_next/static|_next/image|favicon.ico|tiktokMv2Cyr89ab0C0YVozTTG07COpOPJU984\\.txt|tiktokYJsUO50zPPJE7YgxVRx1SMnHT8ORIBAf\\.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
