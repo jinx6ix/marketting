@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function LegalLayout({
   children,
 }: {
@@ -7,22 +9,22 @@ export default function LegalLayout({
     <div className="min-h-screen bg-background">
       <header className="border-b">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4">
-          <a href="/" className="text-lg font-bold tracking-tight">
+          <Link href="/" className="text-lg font-bold tracking-tight">
             Wanderlust Marketing OS
-          </a>
+          </Link>
           <nav className="flex items-center gap-4 text-sm text-muted-foreground">
-            <a href="/privacy" className="hover:text-foreground">
+            <Link href="/privacy" className="hover:text-foreground">
               Privacy
-            </a>
-            <a href="/terms" className="hover:text-foreground">
+            </Link>
+            <Link href="/terms" className="hover:text-foreground">
               Terms
-            </a>
-            <a
+            </Link>
+            <Link
               href="/login"
               className="rounded-md border px-3 py-1.5 hover:bg-muted"
             >
               Log in
-            </a>
+            </Link>
           </nav>
         </div>
       </header>
