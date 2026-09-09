@@ -10,7 +10,7 @@ export default function PrivacyPage() {
   return (
     <article className="space-y-6 text-foreground">
       <header className="space-y-2">
-        <h1 className="text-4xl font-bold tracking-tight">Privacy Policy</h1>
+        <h1 className="text-4xl font-bold tracking-tight">Wanderlust Marketing OS Privacy Policy</h1>
         <p className="text-sm text-muted-foreground">
           Last updated:{" "}
           {new Date().toLocaleDateString("en-US", {
@@ -21,10 +21,16 @@ export default function PrivacyPage() {
         </p>
       </header>
 
+      <section className="rounded-md border bg-muted p-4">
+        <p className="text-sm italic text-muted-foreground">
+          <strong>Disclaimer:</strong> This Privacy Policy is provided for informational purposes as part of the Wanderlust Marketing OS application. Please consult with your legal representative to ensure that this policy meets all legal and regulatory requirements applicable to your business.
+        </p>
+      </section>
+
       <section className="space-y-2">
         <h2 className="text-2xl font-semibold">1. Information we collect</h2>
         <p className="leading-relaxed text-muted-foreground">
-          We collect information you provide when you create an account
+          Wanderlust Marketing OS collects information you provide when you create an account
           (email, organization name) and information that flows through the
           service when you connect social media accounts (post content,
           scheduling metadata, engagement metrics).

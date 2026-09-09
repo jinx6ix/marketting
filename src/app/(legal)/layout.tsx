@@ -9,7 +9,8 @@ export default function LegalLayout({
     <div className="min-h-screen bg-background">
       <header className="border-b">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4">
-          <Link href="/" className="text-lg font-bold tracking-tight">
+          <Link href="/" className="flex items-center gap-2 text-lg font-bold tracking-tight">
+            <img src="/favicon.svg" alt="Wanderlust Marketing OS" className="size-6" />
             Wanderlust Marketing OS
           </Link>
           <nav className="flex items-center gap-4 text-sm text-muted-foreground">

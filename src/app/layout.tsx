@@ -13,6 +13,9 @@ export const metadata: Metadata = {
   },
   description:
     "Full marketing system for travel & tours: create, schedule, publish, monitor socials, and out-strategize competitors.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export const viewport: Viewport = {

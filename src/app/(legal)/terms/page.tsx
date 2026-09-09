@@ -10,7 +10,7 @@ export default function TermsPage() {
   return (
     <article className="space-y-6 text-foreground">
       <header className="space-y-2">
-        <h1 className="text-4xl font-bold tracking-tight">Terms of Service</h1>
+        <h1 className="text-4xl font-bold tracking-tight">Wanderlust Marketing OS Terms of Service</h1>
         <p className="text-sm text-muted-foreground">
           Last updated:{" "}
           {new Date().toLocaleDateString("en-US", {
@@ -21,11 +21,17 @@ export default function TermsPage() {
         </p>
       </header>
 
+      <section className="rounded-md border bg-muted p-4">
+        <p className="text-sm italic text-muted-foreground">
+          <strong>Disclaimer:</strong> These Terms of Service are provided for informational purposes for the Wanderlust Marketing OS application. Please consult with your legal representative to ensure that these terms meet all legal and regulatory requirements applicable to your business.
+        </p>
+      </section>
+
       <section className="space-y-2">
         <h2 className="text-2xl font-semibold">1. Acceptance of terms</h2>
         <p className="leading-relaxed text-muted-foreground">
           By creating an account or using Wanderlust Marketing OS, you agree
-          to these terms. If you do not agree, do not use the service.
+          to these terms. If you do not agree to these terms, please do not use the Wanderlust Marketing OS service.
         </p>
       </section>
 
