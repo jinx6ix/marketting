@@ -296,7 +296,7 @@ export const tiktokAdapter: SocialProviderAdapter = {
   async fetchProfile(tokens) {
     const res = await socialFetch(
       "tiktok",
-      `${API}/user/info/?fields=open_id,union_id,avatar_url,display_name,username`,
+      `${API}/user/info/?fields=open_id,union_id,avatar_url,display_name`,
       {
         headers: {
           Authorization: `Bearer ${tokens.accessToken}`,
@@ -314,10 +314,7 @@ export const tiktokAdapter: SocialProviderAdapter = {
       {
         externalId: user.open_id,
 
-        handle:
-          user.username ??
-          user.display_name ??
-          user.open_id,
+        handle: user.display_name ?? user.open_id,
 
         displayName:
           user.display_name,
